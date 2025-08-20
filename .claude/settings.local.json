@@ -1,0 +1,13 @@
+{
+  "permissions": {
+    "allow": [
+      "mcp__filesystem__read_text_file",
+      "Bash(powershell:*)",
+      "Bash(mkdir:*)",
+      "Bash(git init:*)",
+      "Bash(git add:*)"
+    ],
+    "deny": [],
+    "ask": []
+  }
+}
