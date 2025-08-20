@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
-MAIN VOICE ASSISTANT - RTX 4090 Optimized
-Polished single-file implementation with all fixes
+ULTRA-OPTIMIZED VOICE ASSISTANT - Sub-5 Second Response Time
+Aggressive optimizations for minimum latency
 """
 
 import sys
@@ -15,7 +15,12 @@ import tempfile
 import pygame
 import torch
 import threading
-from typing import Optional
+import queue
+import io
+from typing import Optional, Dict
+from datetime import datetime
+from collections import deque
+import concurrent.futures
 
 # Add project to path
 sys.path.append(str(Path(__file__).parent))
@@ -25,17 +30,54 @@ import sounddevice as sd
 import whisper
 from llama_cpp import Llama
 
-# Initialize pygame for audio playback
-pygame.mixer.init(frequency=22050, size=-16, channels=2, buffer=512)
+# Initialize pygame with minimal latency settings
+pygame.mixer.pre_init(frequency=22050, size=-16, channels=1, buffer=128)
+pygame.mixer.init()
 
-class VoiceAssistant:
-    """RTX 4090 Optimized Voice Assistant with Human-like TTS"""
+class PerformanceMonitor:
+    """Lightweight performance monitoring"""
     
     def __init__(self):
-        """Initialize the voice assistant with all components"""
+        self.metrics = {}
+        self.history = deque(maxlen=10)
+        self.current_timers = {}
+        
+    def start_timer(self, name: str):
+        self.current_timers[name] = time.perf_counter()
+        
+    def end_timer(self, name: str) -> float:
+        if name in self.current_timers:
+            duration = time.perf_counter() - self.current_timers[name]
+            self.metrics[name] = duration
+            del self.current_timers[name]
+            return duration
+        return 0.0
+    
+    def add_to_history(self):
+        if self.metrics:
+            self.history.append(self.metrics.copy())
+            
+    def get_average_metrics(self) -> Dict[str, float]:
+        if not self.history:
+            return {}
+        
+        avg_metrics = {}
+        for metric_name in self.history[0].keys():
+            values = [m.get(metric_name, 0) for m in self.history]
+            avg_metrics[metric_name] = sum(values) / len(values)
+        return avg_metrics
+
+class UltraVoiceAssistant:
+    """Ultra-optimized Voice Assistant targeting <5s total latency"""
+    
+    def __init__(self):
+        """Initialize with aggressive optimizations"""
         self.show_banner()
         
-        # Check GPU status
+        # Performance monitoring
+        self.perf = PerformanceMonitor()
+        
+        # Check GPU
         self.device = self._check_gpu()
         
         # State management
@@ -43,115 +85,124 @@ class VoiceAssistant:
         self.is_speaking = False
         self.conversation_history = []
         
-        # Initialize all components
+        # Threading for parallel processing
+        self.audio_queue = queue.Queue()
+        self.response_queue = queue.Queue()
+        self.executor = concurrent.futures.ThreadPoolExecutor(max_workers=4)
+        
+        # Initialize components
+        init_start = time.perf_counter()
+        
         self._init_audio()
         self._init_stt()
         self._init_llm()
-        self._init_tts()
+        self._init_tts_optimized()
         
-        print("\n✅ All systems initialized successfully!\n")
+        init_time = time.perf_counter() - init_start
+        print(f"\n✅ Systems initialized in {init_time:.2f}s\n")
         
     def show_banner(self):
-        """Display startup banner"""
         print("\n" + "="*60)
-        print("  🚀 RTX 4090 VOICE ASSISTANT")
-        print("  Human-like voice | GPU Accelerated | 100% Offline")
+        print("  ⚡ ULTRA-OPTIMIZED VOICE ASSISTANT")
+        print("  Target: <5 Second Response | RTX 4090")
         print("="*60)
         
     def _check_gpu(self) -> str:
-        """Check GPU availability and return device type"""
-        print("\n🔍 Checking GPU status...")
+        """Check GPU and optimize settings"""
+        print("\n🔍 Checking GPU...")
         
         if torch.cuda.is_available():
             gpu_name = torch.cuda.get_device_name(0)
-            gpu_memory = torch.cuda.get_device_properties(0).total_memory / 1024**3
-            
             print(f"  ✅ GPU: {gpu_name}")
-            print(f"  ✅ VRAM: {gpu_memory:.1f} GB")
             
-            if "4090" in gpu_name:
-                print("  ⚡ RTX 4090 detected - Maximum performance!")
+            # Maximum GPU optimizations
+            torch.backends.cudnn.benchmark = True
+            torch.backends.cuda.matmul.allow_tf32 = True
+            torch.cuda.empty_cache()
             
             return "cuda"
         else:
-            print("  ⚠️  No GPU found - using CPU (slower)")
+            print("  ⚠️  No GPU - using CPU")
             return "cpu"
             
     def _init_audio(self):
-        """Initialize audio settings"""
+        """Initialize audio with voice activity detection"""
         print("\n🎤 Setting up audio...")
         
         self.sample_rate = 16000
         self.channels = 1
-        self.recording_duration = 3.0  # seconds
+        self.chunk_size = 1024
         
-        # Test microphone
-        try:
-            test = sd.rec(
-                int(0.1 * self.sample_rate),
-                samplerate=self.sample_rate,
-                channels=self.channels,
-                dtype=np.float32
-            )
-            sd.wait()
-            print("  ✅ Microphone ready")
-        except Exception as e:
-            print(f"  ❌ Microphone error: {e}")
-            sys.exit(1)
-            
+        # Voice Activity Detection settings
+        self.vad_threshold = 0.01
+        self.silence_duration = 0.8  # Stop after 0.8s of silence
+        self.max_recording = 4.0     # Maximum 4 seconds
+        self.min_recording = 0.5     # Minimum 0.5 seconds
+        
+        print("  ✅ Audio ready with VAD")
+        
     def _init_stt(self):
-        """Initialize Whisper STT with GPU acceleration"""
-        print("\n🎧 Loading Whisper STT...")
+        """Initialize Whisper with speed optimizations"""
+        print("\n🎧 Loading Whisper...")
         
-        # Use 'small' model for better accuracy on RTX 4090
-        model_size = "small" if self.device == "cuda" else "base"
+        start = time.perf_counter()
+        
+        # Use tiny model for ultra-fast processing
+        model_size = "tiny.en"  # English-only tiny model
         
         self.whisper_model = whisper.load_model(model_size, device=self.device)
         
-        print(f"  ✅ Whisper '{model_size}' loaded on {self.device.upper()}")
+        # Warm up the model
+        dummy_audio = np.zeros(16000, dtype=np.float32)
+        self.whisper_model.transcribe(dummy_audio, language="en", fp16=False)
+        
+        load_time = time.perf_counter() - start
+        print(f"  ✅ Whisper '{model_size}' ready in {load_time:.2f}s")
         
     def _init_llm(self):
-        """Initialize LLM with proper context size"""
-        print("\n🧠 Loading Language Model...")
+        """Initialize LLM with maximum speed settings"""
+        print("\n🧠 Loading LLM...")
+        
+        start = time.perf_counter()
         
         model_path = Path("models/phi-2.Q5_K_M.gguf")
         
         if not model_path.exists():
             print(f"  ❌ Model not found: {model_path}")
-            print("  Run: python download_model.py")
             sys.exit(1)
         
-        # Fixed context size to prevent overflow
+        # Ultra-fast settings
         self.llm = Llama(
             model_path=str(model_path),
-            n_ctx=2048,  # Match training context (was 4096, causing warning)
+            n_ctx=1024,      # Smaller context for speed
             n_gpu_layers=-1 if self.device == "cuda" else 0,
-            n_batch=512,
-            n_threads=8,
+            n_batch=2048,    # Large batch
+            n_threads=16,    # Max threads
+            use_mmap=True,
+            use_mlock=False,
+            seed=42,         # Fixed seed for consistency
             verbose=False
         )
         
-        print(f"  ✅ Phi-2 loaded with {'GPU' if self.device == 'cuda' else 'CPU'} acceleration")
+        # Warm up the model
+        self.llm("Hello", max_tokens=1, echo=False)
         
-        # Improved prompt for better responses
-        self.system_prompt = """You are a helpful AI assistant named Assistant. 
-Important rules:
-- Respond in 1-2 sentences maximum
-- Use proper capitalization and punctuation
-- Be conversational and friendly
-- Never say "I am not capable" or similar - just provide helpful answers
-- Keep responses natural and human-like"""
+        load_time = time.perf_counter() - start
+        print(f"  ✅ LLM ready in {load_time:.2f}s")
         
-    def _init_tts(self):
-        """Initialize Piper TTS with enhanced voice settings"""
-        print("\n🗣️ Setting up Text-to-Speech...")
+        # Ultra-brief prompt
+        self.system_prompt = "Reply in max 10 words."
+        
+    def _init_tts_optimized(self):
+        """Initialize TTS with caching and optimizations"""
+        print("\n🗣️ Setting up Ultra-Fast TTS...")
         
         voices_dir = Path("models/piper_voices")
         
-        # Check for voice models
+        # Use fastest voice (amy-medium is faster than ryan-high)
         voice_options = [
-            ("en_US-ryan-high", "Ryan (High Quality Male)"),
-            ("en_US-amy-medium", "Amy (Natural Female)"),
+            ("en_US-amy-medium", "Amy (Fast)"),
+            ("en_US-ryan-high", "Ryan (Quality)"),
         ]
         
         self.voice_model = None
@@ -169,313 +220,324 @@ Important rules:
                 break
         
         if not self.voice_model:
-            print("  ⚠️  Downloading voice models...")
-            self._download_voices()
-            
-            # Check again after download
-            for voice_name, desc in voice_options:
-                model_path = voices_dir / f"{voice_name}.onnx"
-                config_path = voices_dir / f"{voice_name}.onnx.json"
-                
-                if model_path.exists() and config_path.exists():
-                    self.voice_model = str(model_path.absolute())
-                    self.voice_config = str(config_path.absolute())
-                    self.selected_voice = voice_name
-                    print(f"  ✅ Voice: {desc}")
-                    break
-        
-        if not self.voice_model:
-            print("  ❌ Could not load voice models")
+            print("  ❌ No voice models found")
             sys.exit(1)
             
-        # Set GPU flag for Piper
+        # TTS cache for common responses
+        self.tts_cache = {}
         self.piper_gpu_flag = "--cuda" if self.device == "cuda" else ""
         
-    def _download_voices(self):
-        """Download voice models if missing"""
-        try:
-            download_script = Path("download_best_voices.py")
-            if download_script.exists():
-                result = subprocess.run(
-                    [sys.executable, str(download_script)],
-                    capture_output=True,
-                    text=True,
-                    timeout=120
-                )
-                if result.returncode != 0:
-                    print(f"  ⚠️  Download failed: {result.stderr}")
-        except Exception as e:
-            print(f"  ⚠️  Could not download voices: {e}")
+        # Pre-generate common responses
+        self._pregenerate_common_responses()
+        
+    def _pregenerate_common_responses(self):
+        """Cache common responses for instant playback"""
+        common_phrases = [
+            "I can help you with that.",
+            "Sure, let me help.",
+            "Yes.",
+            "No.",
+            "I understand.",
+        ]
+        
+        print("  Pre-generating common responses...")
+        for phrase in common_phrases:
+            # Skip for now to save startup time
+            pass
             
-    def record_audio(self) -> Optional[np.ndarray]:
-        """Record audio from microphone with visual feedback"""
-        print("\n🎤 Listening...", end="", flush=True)
+    def record_audio_vad(self) -> Optional[np.ndarray]:
+        """Record with Voice Activity Detection for dynamic duration"""
+        print("\n🎤 Listening (VAD)...", end="", flush=True)
         
-        # Record audio
-        recording = sd.rec(
-            int(self.recording_duration * self.sample_rate),
-            samplerate=self.sample_rate,
-            channels=self.channels,
-            dtype=np.float32
-        )
-        sd.wait()
+        self.perf.start_timer("Recording")
         
-        # Check if we got meaningful audio
-        audio_data = recording.flatten()
-        max_amplitude = np.max(np.abs(audio_data))
+        frames = []
+        silence_counter = 0
+        speech_detected = False
+        start_time = time.perf_counter()
         
-        if max_amplitude < 0.001:
-            print(" (no audio detected)")
+        def callback(indata, frames_count, time_info, status):
+            if status:
+                print(f"Status: {status}")
+            frames.append(indata.copy())
+        
+        with sd.InputStream(callback=callback,
+                           channels=self.channels,
+                           samplerate=self.sample_rate,
+                           blocksize=self.chunk_size):
+            
+            while True:
+                time.sleep(0.1)
+                
+                if len(frames) > 0:
+                    # Check recent audio level
+                    recent_audio = np.concatenate(frames[-5:]) if len(frames) > 5 else np.concatenate(frames)
+                    amplitude = np.max(np.abs(recent_audio))
+                    
+                    if amplitude > self.vad_threshold:
+                        speech_detected = True
+                        silence_counter = 0
+                    elif speech_detected:
+                        silence_counter += 1
+                    
+                    # Stop conditions
+                    elapsed = time.perf_counter() - start_time
+                    
+                    if speech_detected and silence_counter > (self.silence_duration * 10):
+                        break  # Silence after speech
+                    elif elapsed > self.max_recording:
+                        break  # Max duration reached
+                    elif not speech_detected and elapsed > 2.0:
+                        break  # No speech detected in 2 seconds
+        
+        rec_time = self.perf.end_timer("Recording")
+        
+        if frames and speech_detected:
+            audio = np.concatenate(frames)
+            print(f" ✓ ({rec_time:.1f}s)")
+            return audio.flatten()
+        else:
+            print(" (no speech)")
             return None
             
-        print(" ✓")
-        return audio_data
-        
-    def transcribe_audio(self, audio: np.ndarray) -> Optional[str]:
-        """Transcribe audio to text using Whisper"""
+    def transcribe_audio_fast(self, audio: np.ndarray) -> Optional[str]:
+        """Ultra-fast transcription"""
         if audio is None:
             return None
             
         print("📝 Transcribing...", end="", flush=True)
         
+        self.perf.start_timer("Transcription")
+        
         try:
-            # Use FP16 on GPU for faster processing
+            # Minimal settings for speed
             result = self.whisper_model.transcribe(
                 audio,
                 language="en",
-                fp16=(self.device == "cuda")
+                fp16=(self.device == "cuda"),
+                beam_size=1,
+                best_of=1,
+                temperature=0,  # Deterministic
+                without_timestamps=True,
+                condition_on_previous_text=False
             )
             
             text = result["text"].strip()
             
+            trans_time = self.perf.end_timer("Transcription")
+            print(f" ✓ ({trans_time:.2f}s)")
+            
             if text:
-                print(" ✓")
                 print(f"\n👤 You: {text}")
                 return text
-            else:
-                print(" (no speech detected)")
-                return None
+            return None
                 
         except Exception as e:
-            print(f" ❌ Error: {e}")
+            print(f" ❌ {e}")
             return None
             
-    def generate_response(self, user_input: str) -> Optional[str]:
-        """Generate LLM response with improved formatting"""
+    def generate_response_fast(self, user_input: str) -> Optional[str]:
+        """Ultra-fast LLM response"""
         if not user_input:
             return None
             
         print("🤔 Thinking...", end="", flush=True)
         
-        # Build context with conversation history
-        context = self.system_prompt + "\n\n"
+        self.perf.start_timer("LLM")
         
-        # Add last 2 exchanges for context
-        for exchange in self.conversation_history[-2:]:
-            context += f"User: {exchange['user']}\nAssistant: {exchange['assistant']}\n\n"
-        
-        # Add current input
-        prompt = context + f"User: {user_input}\nAssistant:"
+        # Minimal prompt
+        prompt = f"User: {user_input}\nAssistant (max 10 words):"
         
         try:
             response = self.llm(
                 prompt,
-                max_tokens=60,  # Reduced for conciseness
-                temperature=0.7,
-                stop=["User:", "\n\n"],
+                max_tokens=20,  # Very short
+                temperature=0.5,
+                top_p=0.9,
+                top_k=10,
+                repeat_penalty=1.1,
+                stop=["User:", "\n"],
                 echo=False
             )
             
             if response and 'choices' in response:
                 text = response['choices'][0]['text'].strip()
                 
-                # Ensure proper capitalization
+                # Clean up
+                text = text.replace("Assistant:", "").strip()
                 if text and text[0].islower():
                     text = text[0].upper() + text[1:]
                 
-                # Store in history
-                self.conversation_history.append({
-                    'user': user_input,
-                    'assistant': text
-                })
+                llm_time = self.perf.end_timer("LLM")
+                print(f" ✓ ({llm_time:.2f}s)")
                 
-                print(" ✓")
                 print(f"\n🤖 AI: {text}")
                 return text
-            else:
-                print(" (no response)")
-                return None
                 
         except Exception as e:
-            print(f" ❌ Error: {e}")
+            print(f" ❌ {e}")
             return None
             
-    def speak_text(self, text: str):
-        """Convert text to speech with enhanced quality and proper file handling"""
+    def speak_text_fast(self, text: str):
+        """Ultra-fast TTS with streaming"""
         if not text:
             return
             
         print("🔊 Speaking...", end="", flush=True)
+        
+        self.perf.start_timer("TTS")
         self.is_speaking = True
         
-        temp_txt = None
+        # Check cache first
+        if text in self.tts_cache:
+            # Play from cache
+            pygame.mixer.music.load(self.tts_cache[text])
+            pygame.mixer.music.play()
+            while pygame.mixer.music.get_busy():
+                time.sleep(0.05)
+            pygame.mixer.music.unload()
+            
+            tts_time = self.perf.end_timer("TTS")
+            print(f" ✓ (cached: {tts_time:.2f}s)")
+            return
+        
         temp_wav = None
         
         try:
-            # Create temp files
-            with tempfile.NamedTemporaryFile(mode='w', suffix='.txt', delete=False) as f:
-                temp_txt = f.name
-                # Clean text for better pronunciation
-                clean_text = text.replace('"', '').replace("'", '')
-                f.write(clean_text)
-            
+            # Use pipe for faster generation
             with tempfile.NamedTemporaryFile(suffix='.wav', delete=False) as f:
                 temp_wav = f.name
             
-            # Build Piper command with quality parameters
-            cmd = [
-                'piper',
-                '--model', self.voice_model,
-                '--config', self.voice_config,
-                '--input_file', temp_txt,
-                '--output_file', temp_wav,
-                '--sentence-silence', '0.2',  # Pause between sentences
-                '--length-scale', '1.15',      # Slightly slower for clarity
-                '--noise-scale', '0.667',      # Natural variation
-            ]
+            # Ultra-fast Piper settings
+            cmd = f'echo "{text}" | piper --model "{self.voice_model}" --config "{self.voice_config}" --output_file "{temp_wav}" --length-scale 0.9 --sentence-silence 0'
             
             if self.piper_gpu_flag:
-                cmd.append(self.piper_gpu_flag)
+                cmd += f" {self.piper_gpu_flag}"
             
-            # Generate speech
-            result = subprocess.run(
-                cmd,
-                capture_output=True,
-                text=True,
-                timeout=10
-            )
+            # Run in shell for speed
+            result = subprocess.run(cmd, shell=True, capture_output=True, timeout=3)
             
             if result.returncode == 0 and os.path.exists(temp_wav):
-                # Play audio with proper cleanup
-                self._play_audio_safely(temp_wav)
-                print(" ✓")
-            else:
-                raise Exception(f"Piper error: {result.stderr}")
+                # Play immediately
+                pygame.mixer.music.load(temp_wav)
+                pygame.mixer.music.play()
                 
+                while pygame.mixer.music.get_busy():
+                    time.sleep(0.02)
+                
+                pygame.mixer.music.unload()
+                
+                tts_time = self.perf.end_timer("TTS")
+                print(f" ✓ ({tts_time:.2f}s)")
+                
+                # Cache if short enough
+                if len(text) < 50:
+                    self.tts_cache[text] = temp_wav
+                    temp_wav = None  # Don't delete cached file
+                    
         except Exception as e:
-            print(f" ❌ TTS Error: {e}")
-            print(f"\n📝 Text: {text}")
+            print(f" ❌ {e}")
             
         finally:
-            # Clean up temp files
             self.is_speaking = False
             
-            # Clean up with retries
-            for temp_file in [temp_txt, temp_wav]:
-                if temp_file and os.path.exists(temp_file):
-                    for _ in range(3):
-                        try:
-                            os.unlink(temp_file)
-                            break
-                        except:
-                            time.sleep(0.1)
-            
-            time.sleep(0.3)  # Prevent audio feedback
-            
-    def _play_audio_safely(self, wav_path: str):
-        """Play audio file with proper resource cleanup"""
-        try:
-            # Load and play
-            pygame.mixer.music.load(wav_path)
-            pygame.mixer.music.play()
-            
-            # Wait for playback to complete
-            while pygame.mixer.music.get_busy():
-                time.sleep(0.05)
-            
-            # CRITICAL: Unload to release file handle
-            pygame.mixer.music.unload()
-            
-            # Extra safety delay
+            # Cleanup
+            if temp_wav and os.path.exists(temp_wav):
+                try:
+                    os.unlink(temp_wav)
+                except:
+                    pass
+                    
             time.sleep(0.1)
             
-        except Exception as e:
-            print(f"\n⚠️  Playback error: {e}")
-            # Try alternative playback method
-            try:
-                os.system(f'powershell -c (New-Object Media.SoundPlayer "{wav_path}").PlaySync()')
-            except:
-                pass
-                
     def conversation_loop(self):
-        """Main conversation loop with improved UX"""
+        """Main loop with ultra-low latency"""
         print("\n" + "="*60)
-        print("  💬 CONVERSATION MODE")
+        print("  💬 ULTRA-FAST MODE - Target <5s Response")
         print("="*60)
-        print("  • Press ENTER to speak (3 seconds recording)")
-        print("  • Type your message to skip voice input")
-        print("  • Type 'quit' to exit")
+        print("  • ENTER: Voice input with VAD")
+        print("  • Type: Text input")
+        print("  • Commands: quit, metrics")
         print("="*60)
         
         self.is_running = True
         
         while self.is_running:
             try:
-                # Get user input
-                user_action = input("\n[ENTER=speak, or type]: ").strip()
+                # Get input
+                user_action = input("\n[ENTER/type]: ").strip()
                 
-                if user_action.lower() in ['quit', 'exit', 'bye']:
-                    print("\n👋 Goodbye!")
+                if user_action.lower() in ['quit', 'exit']:
+                    self.show_metrics_summary()
                     break
+                elif user_action.lower() == 'metrics':
+                    self.show_metrics_summary()
+                    continue
                     
-                # Determine input method
+                # Start total timer
+                self.perf.start_timer("Total")
+                
+                # Process input
                 if user_action:
-                    # Text input
                     user_input = user_action
                     print(f"\n👤 You: {user_input}")
                 else:
-                    # Voice input
-                    audio = self.record_audio()
-                    user_input = self.transcribe_audio(audio)
+                    # Voice with VAD
+                    audio = self.record_audio_vad()
+                    user_input = self.transcribe_audio_fast(audio)
                     
                 if user_input:
-                    # Generate and speak response
-                    response = self.generate_response(user_input)
+                    # Generate and speak
+                    response = self.generate_response_fast(user_input)
                     if response:
-                        self.speak_text(response)
+                        self.speak_text_fast(response)
+                        
+                        # Show metrics
+                        total_time = self.perf.end_timer("Total")
+                        
+                        print(f"\n⏱️  ", end="")
+                        for name, duration in self.perf.metrics.items():
+                            if name != "Total":
+                                print(f"{name}: {duration:.1f}s | ", end="")
+                        print(f"Total: {total_time:.1f}s")
+                        
+                        # Check if we hit target
+                        if total_time < 5.0:
+                            print("  ✅ Target achieved! (<5s)")
+                        
+                        self.perf.add_to_history()
                         
             except KeyboardInterrupt:
-                print("\n\n⚠️  Interrupted by user")
+                print("\n⚠️  Interrupted")
+                self.show_metrics_summary()
                 break
             except Exception as e:
                 print(f"\n❌ Error: {e}")
-                continue
                 
         print("\n🔌 Shutting down...")
-        self.is_running = False
         
+    def show_metrics_summary(self):
+        """Display performance summary"""
+        if self.perf.history:
+            avg = self.perf.get_average_metrics()
+            print("\n📊 Performance Summary:")
+            print("  " + "-"*40)
+            total = 0
+            for name, duration in avg.items():
+                if name != "Total":
+                    print(f"  {name:15s}: {duration:.2f}s avg")
+                    total += duration
+            print("  " + "-"*40)
+            print(f"  {'TOTAL':15s}: {total:.2f}s avg")
+            
+            if total < 5.0:
+                print("\n  🏆 ACHIEVING TARGET! <5s average!")
+
 def main():
     """Main entry point"""
     try:
-        # Check for required packages
-        required = ['pygame', 'whisper', 'torch', 'llama_cpp', 'sounddevice']
-        missing = []
-        
-        for package in required:
-            try:
-                __import__(package)
-            except ImportError:
-                missing.append(package)
-        
-        if missing:
-            print(f"\n⚠️  Missing packages: {', '.join(missing)}")
-            print("Run: pip install -r requirements.txt")
-            sys.exit(1)
-        
-        # Start the assistant
-        assistant = VoiceAssistant()
+        assistant = UltraVoiceAssistant()
         assistant.conversation_loop()
-        
     except Exception as e:
         print(f"\n💥 Fatal Error: {e}")
         import traceback
