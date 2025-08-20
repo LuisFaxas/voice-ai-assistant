@@ -34,6 +34,9 @@ models/piper_voices/*.onnx
 *.gguf
 *.onnx
 
+# Whisper model cache (too large for GitHub)
+models/whisper/
+
 # Logs
 logs/
 *.log

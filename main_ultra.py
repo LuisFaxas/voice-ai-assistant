@@ -1,15 +1,12 @@
 #!/usr/bin/env python3
 """
-ULTRA-FAST VOICE ASSISTANT with Mistral 7B & Faster-Whisper
-Optimized for RTX 4090 - Maximum GPU utilization
+ULTRA-OPTIMIZED VOICE ASSISTANT - Sub-5 Second Response Time
+Aggressive optimizations for minimum latency
 """
 
 import sys
 import os
 import time
-# Fix Windows encoding issues
-if sys.platform == "win32":
-    os.environ["PYTHONIOENCODING"] = "utf-8"
 import re
 import numpy as np
 from pathlib import Path
@@ -20,7 +17,7 @@ import torch
 import threading
 import queue
 import io
-from typing import Optional, Dict, List
+from typing import Optional, Dict
 from datetime import datetime
 from collections import deque
 import concurrent.futures
@@ -30,7 +27,7 @@ sys.path.append(str(Path(__file__).parent))
 
 # Core imports
 import sounddevice as sd
-from faster_whisper import WhisperModel  # NEW: Faster-whisper instead of OpenAI
+import whisper
 from llama_cpp import Llama
 
 # Initialize pygame with minimal latency settings
@@ -70,11 +67,11 @@ class PerformanceMonitor:
             avg_metrics[metric_name] = sum(values) / len(values)
         return avg_metrics
 
-class FasterWhisperVoiceAssistant:
-    """Voice Assistant with Faster-Whisper for 4-5x speed improvement"""
+class UltraVoiceAssistant:
+    """Ultra-optimized Voice Assistant targeting <5s total latency"""
     
     def __init__(self):
-        """Initialize with Faster-Whisper optimizations"""
+        """Initialize with aggressive optimizations"""
         self.show_banner()
         
         # Performance monitoring
@@ -97,26 +94,26 @@ class FasterWhisperVoiceAssistant:
         init_start = time.perf_counter()
         
         self._init_audio()
-        self._init_faster_whisper()  # NEW METHOD
+        self._init_stt()
         self._init_llm()
         self._init_tts_optimized()
         
         init_time = time.perf_counter() - init_start
-        print(f"\n[OK] Systems initialized in {init_time:.2f}s\n")
+        print(f"\n✅ Systems initialized in {init_time:.2f}s\n")
         
     def show_banner(self):
         print("\n" + "="*60)
-        print("  MISTRAL 7B + FASTER-WHISPER VOICE ASSISTANT")
-        print("  RTX 4090 Optimized | Target: <3s Response")
+        print("  ⚡ ULTRA-OPTIMIZED VOICE ASSISTANT")
+        print("  Target: <5 Second Response | RTX 4090")
         print("="*60)
         
     def _check_gpu(self) -> str:
         """Check GPU and optimize settings"""
-        print("\n[*] Checking GPU...")
+        print("\n🔍 Checking GPU...")
         
         if torch.cuda.is_available():
             gpu_name = torch.cuda.get_device_name(0)
-            print(f"  [OK] GPU: {gpu_name}")
+            print(f"  ✅ GPU: {gpu_name}")
             
             # Maximum GPU optimizations
             torch.backends.cudnn.benchmark = True
@@ -125,12 +122,12 @@ class FasterWhisperVoiceAssistant:
             
             return "cuda"
         else:
-            print("  [!] No GPU - using CPU")
+            print("  ⚠️  No GPU - using CPU")
             return "cpu"
             
     def _init_audio(self):
         """Initialize audio with voice activity detection"""
-        print("\n[*] Setting up audio...")
+        print("\n🎤 Setting up audio...")
         
         self.sample_rate = 16000
         self.channels = 1
@@ -142,140 +139,63 @@ class FasterWhisperVoiceAssistant:
         self.max_recording = 4.0     # Maximum 4 seconds
         self.min_recording = 0.5     # Minimum 0.5 seconds
         
-        print("  [OK] Audio ready with VAD")
+        print("  ✅ Audio ready with VAD")
         
-    def _init_faster_whisper(self):
-        """Initialize Faster-Whisper with CTranslate2 optimizations"""
-        print("\n[*] Loading Faster-Whisper (4-5x faster)...")
+    def _init_stt(self):
+        """Initialize Whisper with speed optimizations"""
+        print("\n🎧 Loading Whisper...")
         
         start = time.perf_counter()
         
-        # Determine compute type based on GPU
-        if self.device == "cuda":
-            # RTX 4090 supports int8_float16 for best speed/quality tradeoff
-            compute_type = "int8_float16"
-            device = "cuda"
-        else:
-            compute_type = "int8"
-            device = "cpu"
+        # Use tiny model for ultra-fast processing
+        model_size = "tiny.en"  # English-only tiny model
         
-        # Model size options:
-        # tiny.en: Fastest (39M params)
-        # base.en: Good balance (74M params)  
-        # small.en: Better accuracy (244M params)
-        # medium.en: High accuracy (769M params)
-        # large-v3: Best accuracy (1550M params)
+        self.whisper_model = whisper.load_model(model_size, device=self.device)
         
-        model_size = "base.en"  # Better than tiny, still very fast with faster-whisper
-        
-        # Initialize Faster-Whisper model
-        self.whisper_model = WhisperModel(
-            model_size,
-            device=device,
-            compute_type=compute_type,
-            num_workers=2,  # Parallel processing
-            download_root="models/whisper",  # Cache models locally
-            local_files_only=False  # Download if needed
-        )
-        
-        # Warm up the model with dummy audio
+        # Warm up the model
         dummy_audio = np.zeros(16000, dtype=np.float32)
-        list(self.whisper_model.transcribe(
-            dummy_audio,
-            language="en",
-            beam_size=1,
-            best_of=1
-        ))
+        self.whisper_model.transcribe(dummy_audio, language="en", fp16=False)
         
         load_time = time.perf_counter() - start
-        print(f"  [OK] Faster-Whisper '{model_size}' ready in {load_time:.2f}s")
-        print(f"     Device: {device}, Compute: {compute_type}")
-        print(f"     Expected: 4-5x faster than OpenAI Whisper")
+        print(f"  ✅ Whisper '{model_size}' ready in {load_time:.2f}s")
         
     def _init_llm(self):
-        """Initialize Mistral 7B with RTX 4090 optimizations"""
-        print("\n[*] Loading Mistral 7B...")
+        """Initialize LLM with maximum speed settings"""
+        print("\n🧠 Loading LLM...")
         
         start = time.perf_counter()
         
-        # Try Mistral v0.3 first, then v0.2, then fallback to Phi-2
-        model_paths = [
-            Path("models/mistral-7b-instruct-v0.3.Q5_K_M.gguf"),  # Mistral 7B v0.3 (latest)
-            Path("models/mistral-7b-instruct-v0.2.Q5_K_M.gguf"),  # Mistral 7B v0.2
-            Path("models/phi-2.Q5_K_M.gguf")  # Fallback
-        ]
+        model_path = Path("models/phi-2.Q5_K_M.gguf")
         
-        model_path = None
-        for path in model_paths:
-            if path.exists():
-                model_path = path
-                break
-        
-        if not model_path:
-            print(f"  [ERROR] No models found")
+        if not model_path.exists():
+            print(f"  ❌ Model not found: {model_path}")
             sys.exit(1)
         
-        model_name = model_path.stem
-        print(f"  [*] Loading: {model_name}")
-        
-        # RTX 4090 optimized settings for Mistral 7B
-        if "mistral" in model_name.lower():
-            # Mistral 7B optimal settings for RTX 4090
-            self.llm = Llama(
-                model_path=str(model_path),
-                n_ctx=4096,      # Larger context for better understanding
-                n_gpu_layers=-1 if self.device == "cuda" else 0,  # Full GPU offload
-                n_batch=512,     # Optimal batch size for 7B model
-                n_threads=8,     # Balanced threading
-                use_mmap=True,   # Memory mapping for faster loading
-                use_mlock=False,
-                seed=42,
-                verbose=False,
-                # RTX 4090 specific optimizations
-                tensor_split=None,  # Use full GPU
-                rope_freq_base=10000,  # Standard RoPE
-                rope_freq_scale=1.0,
-                f16_kv=True,     # Use FP16 for KV cache
-                logits_all=False,
-                vocab_only=False,
-                embedding=False
-            )
-            # Better prompt for Mistral
-            self.system_prompt = "You are a helpful AI assistant. Respond concisely and clearly."
-            self.use_instruct_format = True
-        else:
-            # Phi-2 settings (fallback)
-            self.llm = Llama(
-                model_path=str(model_path),
-                n_ctx=1024,
-                n_gpu_layers=-1 if self.device == "cuda" else 0,
-                n_batch=2048,
-                n_threads=16,
-                use_mmap=True,
-                use_mlock=False,
-                seed=42,
-                verbose=False
-            )
-            self.system_prompt = "Reply in max 10 words."
-            self.use_instruct_format = False
+        # Ultra-fast settings
+        self.llm = Llama(
+            model_path=str(model_path),
+            n_ctx=1024,      # Smaller context for speed
+            n_gpu_layers=-1 if self.device == "cuda" else 0,
+            n_batch=2048,    # Large batch
+            n_threads=16,    # Max threads
+            use_mmap=True,
+            use_mlock=False,
+            seed=42,         # Fixed seed for consistency
+            verbose=False
+        )
         
         # Warm up the model
         self.llm("Hello", max_tokens=1, echo=False)
         
         load_time = time.perf_counter() - start
-        print(f"  [OK] {model_name} ready in {load_time:.2f}s")
+        print(f"  ✅ LLM ready in {load_time:.2f}s")
         
-        if "mistral" in model_name.lower():
-            print(f"     RTX 4090: Full GPU offload, 24GB VRAM")
-            print(f"     Expected: ~130 tokens/sec generation")
-            if "v0.3" in model_name.lower():
-                print(f"     Version: v0.3 - Latest with improved reasoning")
-            elif "v0.2" in model_name.lower():
-                print(f"     Version: v0.2 - Previous stable version")
+        # Ultra-brief prompt
+        self.system_prompt = "Reply in max 10 words."
         
     def _init_tts_optimized(self):
         """Initialize TTS with caching and optimizations"""
-        print("\n[*] Setting up Ultra-Fast TTS...")
+        print("\n🗣️ Setting up Ultra-Fast TTS...")
         
         voices_dir = Path("models/piper_voices")
         
@@ -296,20 +216,38 @@ class FasterWhisperVoiceAssistant:
                 self.voice_model = str(model_path.absolute())
                 self.voice_config = str(config_path.absolute())
                 self.selected_voice = voice_name
-                print(f"  [OK] Voice: {desc}")
+                print(f"  ✅ Voice: {desc}")
                 break
         
         if not self.voice_model:
-            print("  [ERROR] No voice models found")
+            print("  ❌ No voice models found")
             sys.exit(1)
             
         # TTS cache for common responses
         self.tts_cache = {}
         self.piper_gpu_flag = "--cuda" if self.device == "cuda" else ""
+        
+        # Pre-generate common responses
+        self._pregenerate_common_responses()
+        
+    def _pregenerate_common_responses(self):
+        """Cache common responses for instant playback"""
+        common_phrases = [
+            "I can help you with that.",
+            "Sure, let me help.",
+            "Yes.",
+            "No.",
+            "I understand.",
+        ]
+        
+        print("  Pre-generating common responses...")
+        for phrase in common_phrases:
+            # Skip for now to save startup time
+            pass
             
     def record_audio_vad(self) -> Optional[np.ndarray]:
         """Record with Voice Activity Detection for dynamic duration"""
-        print("\n[MIC] Listening (VAD)...", end="", flush=True)
+        print("\n🎤 Listening (VAD)...", end="", flush=True)
         
         self.perf.start_timer("Recording")
         
@@ -356,123 +294,88 @@ class FasterWhisperVoiceAssistant:
         
         if frames and speech_detected:
             audio = np.concatenate(frames)
-            print(f" OK ({rec_time:.1f}s)")
+            print(f" ✓ ({rec_time:.1f}s)")
             return audio.flatten()
         else:
             print(" (no speech)")
             return None
             
-    def transcribe_audio_faster(self, audio: np.ndarray) -> Optional[str]:
-        """Ultra-fast transcription with Faster-Whisper"""
+    def transcribe_audio_fast(self, audio: np.ndarray) -> Optional[str]:
+        """Ultra-fast transcription"""
         if audio is None:
             return None
             
-        print("[STT] Transcribing (Faster-Whisper)...", end="", flush=True)
+        print("📝 Transcribing...", end="", flush=True)
         
         self.perf.start_timer("Transcription")
         
         try:
-            # Faster-Whisper transcription with optimized settings
-            segments, info = self.whisper_model.transcribe(
+            # Minimal settings for speed
+            result = self.whisper_model.transcribe(
                 audio,
                 language="en",
-                beam_size=1,  # Fastest beam search
-                best_of=1,    # Single attempt
+                fp16=(self.device == "cuda"),
+                beam_size=1,
+                best_of=1,
                 temperature=0,  # Deterministic
-                vad_filter=True,  # Enable VAD filter for better accuracy
-                vad_parameters=dict(
-                    min_silence_duration_ms=500,  # Minimum silence for splitting
-                    threshold=0.6,  # VAD threshold
-                    min_speech_duration_ms=250,  # Minimum speech duration
-                    max_speech_duration_s=float('inf')
-                ),
-                without_timestamps=True,  # Skip timestamps for speed
-                word_timestamps=False,  # Skip word-level timestamps
-                condition_on_previous_text=False,  # Don't use context
-                compression_ratio_threshold=2.4,  # Skip low quality audio
-                log_prob_threshold=-1.0,  # Skip uncertain segments
-                no_speech_threshold=0.6  # Threshold for silence detection
+                without_timestamps=True,
+                condition_on_previous_text=False
             )
             
-            # Collect transcribed text
-            text_parts = []
-            for segment in segments:
-                text_parts.append(segment.text.strip())
-            
-            text = " ".join(text_parts).strip()
+            text = result["text"].strip()
             
             trans_time = self.perf.end_timer("Transcription")
-            print(f" OK ({trans_time:.2f}s)")
+            print(f" ✓ ({trans_time:.2f}s)")
             
             if text:
-                print(f"\n[USER] You: {text}")
+                print(f"\n👤 You: {text}")
                 return text
             return None
                 
         except Exception as e:
-            print(f" ERROR: {e}")
+            print(f" ❌ {e}")
             return None
             
     def generate_response_fast(self, user_input: str) -> Optional[str]:
-        """Ultra-fast LLM response with Mistral 7B optimizations"""
+        """Ultra-fast LLM response"""
         if not user_input:
             return None
             
-        print("[LLM] Thinking...", end="", flush=True)
+        print("🤔 Thinking...", end="", flush=True)
         
         self.perf.start_timer("LLM")
         
-        # Format prompt based on model
-        if hasattr(self, 'use_instruct_format') and self.use_instruct_format:
-            # Mistral Instruct format
-            prompt = f"[INST] {user_input} [/INST]"
-            max_tokens = 50  # Allow more tokens for better responses
-            temperature = 0.7
-            top_p = 0.95
-            top_k = 40
-        else:
-            # Phi-2 format
-            prompt = f"User: {user_input}\nAssistant (max 10 words):"
-            max_tokens = 20
-            temperature = 0.5
-            top_p = 0.9
-            top_k = 10
+        # Minimal prompt
+        prompt = f"User: {user_input}\nAssistant (max 10 words):"
         
         try:
             response = self.llm(
                 prompt,
-                max_tokens=max_tokens,
-                temperature=temperature,
-                top_p=top_p,
-                top_k=top_k,
+                max_tokens=20,  # Very short
+                temperature=0.5,
+                top_p=0.9,
+                top_k=10,
                 repeat_penalty=1.1,
-                stop=["[INST]", "User:", "\n\n"],
+                stop=["User:", "\n"],
                 echo=False
             )
             
             if response and 'choices' in response:
                 text = response['choices'][0]['text'].strip()
                 
-                # Clean up based on model
+                # Clean up
                 text = text.replace("Assistant:", "").strip()
-                text = text.replace("[/INST]", "").strip()
-                
-                # Limit response length for speed
-                sentences = text.split('.')
-                if len(sentences) > 2:
-                    text = '.'.join(sentences[:2]) + '.'
-                
                 if text and text[0].islower():
                     text = text[0].upper() + text[1:]
                 
                 llm_time = self.perf.end_timer("LLM")
-                print(f" OK ({llm_time:.2f}s)")
+                print(f" ✓ ({llm_time:.2f}s)")
                 
-                print(f"\n[AI] {text}")
+                print(f"\n🤖 AI: {text}")
                 return text
                 
         except Exception as e:
-            print(f" ERROR: {e}")
+            print(f" ❌ {e}")
             return None
             
     def speak_text_fast(self, text: str):
@@ -480,7 +383,7 @@ class FasterWhisperVoiceAssistant:
         if not text:
             return
             
-        print("[TTS] Speaking...", end="", flush=True)
+        print("🔊 Speaking...", end="", flush=True)
         
         self.perf.start_timer("TTS")
         self.is_speaking = True
@@ -495,7 +398,7 @@ class FasterWhisperVoiceAssistant:
             pygame.mixer.music.unload()
             
             tts_time = self.perf.end_timer("TTS")
-            print(f" OK (cached: {tts_time:.2f}s)")
+            print(f" ✓ (cached: {tts_time:.2f}s)")
             return
         
         temp_wav = None
@@ -525,7 +428,7 @@ class FasterWhisperVoiceAssistant:
                 pygame.mixer.music.unload()
                 
                 tts_time = self.perf.end_timer("TTS")
-                print(f" OK ({tts_time:.2f}s)")
+                print(f" ✓ ({tts_time:.2f}s)")
                 
                 # Cache if short enough
                 if len(text) < 50:
@@ -533,7 +436,7 @@ class FasterWhisperVoiceAssistant:
                     temp_wav = None  # Don't delete cached file
                     
         except Exception as e:
-            print(f" ERROR: {e}")
+            print(f" ❌ {e}")
             
         finally:
             self.is_speaking = False
@@ -550,11 +453,11 @@ class FasterWhisperVoiceAssistant:
     def conversation_loop(self):
         """Main loop with ultra-low latency"""
         print("\n" + "="*60)
-        print("  MISTRAL 7B + FASTER-WHISPER - RTX 4090 MODE")
+        print("  💬 ULTRA-FAST MODE - Target <5s Response")
         print("="*60)
-        print("  - ENTER: Voice input with VAD")
-        print("  - Type: Text input")
-        print("  - Commands: quit, metrics")
+        print("  • ENTER: Voice input with VAD")
+        print("  • Type: Text input")
+        print("  • Commands: quit, metrics")
         print("="*60)
         
         self.is_running = True
@@ -581,7 +484,7 @@ class FasterWhisperVoiceAssistant:
                 else:
                     # Voice with VAD
                     audio = self.record_audio_vad()
-                    user_input = self.transcribe_audio_faster(audio)  # Using faster-whisper
+                    user_input = self.transcribe_audio_fast(audio)
                     
                 if user_input:
                     # Generate and speak
@@ -592,34 +495,32 @@ class FasterWhisperVoiceAssistant:
                         # Show metrics
                         total_time = self.perf.end_timer("Total")
                         
-                        print(f"\n[TIME] ", end="")
+                        print(f"\n⏱️  ", end="")
                         for name, duration in self.perf.metrics.items():
                             if name != "Total":
                                 print(f"{name}: {duration:.1f}s | ", end="")
                         print(f"Total: {total_time:.1f}s")
                         
-                        # Check if we hit new target
-                        if total_time < 3.0:
-                            print("  [*] ULTRA-FAST! (<3s)")
-                        elif total_time < 5.0:
-                            print("  [OK] Target achieved! (<5s)")
+                        # Check if we hit target
+                        if total_time < 5.0:
+                            print("  ✅ Target achieved! (<5s)")
                         
                         self.perf.add_to_history()
                         
             except KeyboardInterrupt:
-                print("\n[!] Interrupted")
+                print("\n⚠️  Interrupted")
                 self.show_metrics_summary()
                 break
             except Exception as e:
-                print(f"\n[ERROR] {e}")
+                print(f"\n❌ Error: {e}")
                 
-        print("\n[*] Shutting down...")
+        print("\n🔌 Shutting down...")
         
     def show_metrics_summary(self):
         """Display performance summary"""
         if self.perf.history:
             avg = self.perf.get_average_metrics()
-            print("\n[METRICS] Performance Summary (Faster-Whisper):")
+            print("\n📊 Performance Summary:")
             print("  " + "-"*40)
             total = 0
             for name, duration in avg.items():
@@ -629,22 +530,16 @@ class FasterWhisperVoiceAssistant:
             print("  " + "-"*40)
             print(f"  {'TOTAL':15s}: {total:.2f}s avg")
             
-            if total < 3.0:
-                print("\n  [*] ACHIEVING ULTRA-FAST TARGET! <3s average!")
-            elif total < 5.0:
-                print("\n  [OK] ACHIEVING TARGET! <5s average!")
+            if total < 5.0:
+                print("\n  🏆 ACHIEVING TARGET! <5s average!")
 
 def main():
     """Main entry point"""
     try:
-        print("\n[*] Initializing Mistral 7B Voice Assistant...")
-        print("   RTX 4090 Optimized | Faster-Whisper STT")
-        print("   Downloading model if needed...")
-        
-        assistant = FasterWhisperVoiceAssistant()
+        assistant = UltraVoiceAssistant()
         assistant.conversation_loop()
     except Exception as e:
-        print(f"\n[ERROR] Fatal Error: {e}")
+        print(f"\n💥 Fatal Error: {e}")
         import traceback
         traceback.print_exc()
         sys.exit(1)
