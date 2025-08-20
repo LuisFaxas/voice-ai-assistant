@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
-ULTRA-OPTIMIZED VOICE ASSISTANT - Sub-5 Second Response Time
-Aggressive optimizations for minimum latency
+ULTRA-FAST VOICE ASSISTANT with Faster-Whisper
+4-5x faster transcription using CTranslate2 optimization
 """
 
 import sys
@@ -17,7 +17,7 @@ import torch
 import threading
 import queue
 import io
-from typing import Optional, Dict
+from typing import Optional, Dict, List
 from datetime import datetime
 from collections import deque
 import concurrent.futures
@@ -27,7 +27,7 @@ sys.path.append(str(Path(__file__).parent))
 
 # Core imports
 import sounddevice as sd
-import whisper
+from faster_whisper import WhisperModel  # NEW: Faster-whisper instead of OpenAI
 from llama_cpp import Llama
 
 # Initialize pygame with minimal latency settings
@@ -67,11 +67,11 @@ class PerformanceMonitor:
             avg_metrics[metric_name] = sum(values) / len(values)
         return avg_metrics
 
-class UltraVoiceAssistant:
-    """Ultra-optimized Voice Assistant targeting <5s total latency"""
+class FasterWhisperVoiceAssistant:
+    """Voice Assistant with Faster-Whisper for 4-5x speed improvement"""
     
     def __init__(self):
-        """Initialize with aggressive optimizations"""
+        """Initialize with Faster-Whisper optimizations"""
         self.show_banner()
         
         # Performance monitoring
@@ -94,7 +94,7 @@ class UltraVoiceAssistant:
         init_start = time.perf_counter()
         
         self._init_audio()
-        self._init_stt()
+        self._init_faster_whisper()  # NEW METHOD
         self._init_llm()
         self._init_tts_optimized()
         
@@ -103,8 +103,8 @@ class UltraVoiceAssistant:
         
     def show_banner(self):
         print("\n" + "="*60)
-        print("  ⚡ ULTRA-OPTIMIZED VOICE ASSISTANT")
-        print("  Target: <5 Second Response | RTX 4090")
+        print("  ⚡ FASTER-WHISPER VOICE ASSISTANT")
+        print("  4-5x Faster STT | Target: <3s Response | RTX 4090")
         print("="*60)
         
     def _check_gpu(self) -> str:
@@ -141,23 +141,53 @@ class UltraVoiceAssistant:
         
         print("  ✅ Audio ready with VAD")
         
-    def _init_stt(self):
-        """Initialize Whisper with speed optimizations"""
-        print("\n🎧 Loading Whisper...")
+    def _init_faster_whisper(self):
+        """Initialize Faster-Whisper with CTranslate2 optimizations"""
+        print("\n🎧 Loading Faster-Whisper (4-5x faster)...")
         
         start = time.perf_counter()
         
-        # Use tiny model for ultra-fast processing
-        model_size = "tiny.en"  # English-only tiny model
+        # Determine compute type based on GPU
+        if self.device == "cuda":
+            # RTX 4090 supports int8_float16 for best speed/quality tradeoff
+            compute_type = "int8_float16"
+            device = "cuda"
+        else:
+            compute_type = "int8"
+            device = "cpu"
         
-        self.whisper_model = whisper.load_model(model_size, device=self.device)
+        # Model size options:
+        # tiny.en: Fastest (39M params)
+        # base.en: Good balance (74M params)  
+        # small.en: Better accuracy (244M params)
+        # medium.en: High accuracy (769M params)
+        # large-v3: Best accuracy (1550M params)
         
-        # Warm up the model
+        model_size = "base.en"  # Better than tiny, still very fast with faster-whisper
+        
+        # Initialize Faster-Whisper model
+        self.whisper_model = WhisperModel(
+            model_size,
+            device=device,
+            compute_type=compute_type,
+            num_workers=2,  # Parallel processing
+            download_root="models/whisper",  # Cache models locally
+            local_files_only=False  # Download if needed
+        )
+        
+        # Warm up the model with dummy audio
         dummy_audio = np.zeros(16000, dtype=np.float32)
-        self.whisper_model.transcribe(dummy_audio, language="en", fp16=False)
+        list(self.whisper_model.transcribe(
+            dummy_audio,
+            language="en",
+            beam_size=1,
+            best_of=1
+        ))
         
         load_time = time.perf_counter() - start
-        print(f"  ✅ Whisper '{model_size}' ready in {load_time:.2f}s")
+        print(f"  ✅ Faster-Whisper '{model_size}' ready in {load_time:.2f}s")
+        print(f"     Device: {device}, Compute: {compute_type}")
+        print(f"     Expected: 4-5x faster than OpenAI Whisper")
         
     def _init_llm(self):
         """Initialize LLM with maximum speed settings"""
@@ -226,24 +256,6 @@ class UltraVoiceAssistant:
         # TTS cache for common responses
         self.tts_cache = {}
         self.piper_gpu_flag = "--cuda" if self.device == "cuda" else ""
-        
-        # Pre-generate common responses
-        self._pregenerate_common_responses()
-        
-    def _pregenerate_common_responses(self):
-        """Cache common responses for instant playback"""
-        common_phrases = [
-            "I can help you with that.",
-            "Sure, let me help.",
-            "Yes.",
-            "No.",
-            "I understand.",
-        ]
-        
-        print("  Pre-generating common responses...")
-        for phrase in common_phrases:
-            # Skip for now to save startup time
-            pass
             
     def record_audio_vad(self) -> Optional[np.ndarray]:
         """Record with Voice Activity Detection for dynamic duration"""
@@ -300,29 +312,44 @@ class UltraVoiceAssistant:
             print(" (no speech)")
             return None
             
-    def transcribe_audio_fast(self, audio: np.ndarray) -> Optional[str]:
-        """Ultra-fast transcription"""
+    def transcribe_audio_faster(self, audio: np.ndarray) -> Optional[str]:
+        """Ultra-fast transcription with Faster-Whisper"""
         if audio is None:
             return None
             
-        print("📝 Transcribing...", end="", flush=True)
+        print("📝 Transcribing (Faster-Whisper)...", end="", flush=True)
         
         self.perf.start_timer("Transcription")
         
         try:
-            # Minimal settings for speed
-            result = self.whisper_model.transcribe(
+            # Faster-Whisper transcription with optimized settings
+            segments, info = self.whisper_model.transcribe(
                 audio,
                 language="en",
-                fp16=(self.device == "cuda"),
-                beam_size=1,
-                best_of=1,
+                beam_size=1,  # Fastest beam search
+                best_of=1,    # Single attempt
                 temperature=0,  # Deterministic
-                without_timestamps=True,
-                condition_on_previous_text=False
+                vad_filter=True,  # Enable VAD filter for better accuracy
+                vad_parameters=dict(
+                    min_silence_duration_ms=500,  # Minimum silence for splitting
+                    threshold=0.6,  # VAD threshold
+                    min_speech_duration_ms=250,  # Minimum speech duration
+                    max_speech_duration_s=float('inf')
+                ),
+                without_timestamps=True,  # Skip timestamps for speed
+                word_timestamps=False,  # Skip word-level timestamps
+                condition_on_previous_text=False,  # Don't use context
+                compression_ratio_threshold=2.4,  # Skip low quality audio
+                log_prob_threshold=-1.0,  # Skip uncertain segments
+                no_speech_threshold=0.6  # Threshold for silence detection
             )
             
-            text = result["text"].strip()
+            # Collect transcribed text
+            text_parts = []
+            for segment in segments:
+                text_parts.append(segment.text.strip())
+            
+            text = " ".join(text_parts).strip()
             
             trans_time = self.perf.end_timer("Transcription")
             print(f" ✓ ({trans_time:.2f}s)")
@@ -453,7 +480,7 @@ class UltraVoiceAssistant:
     def conversation_loop(self):
         """Main loop with ultra-low latency"""
         print("\n" + "="*60)
-        print("  💬 ULTRA-FAST MODE - Target <5s Response")
+        print("  💬 FASTER-WHISPER MODE - Target <3s Response")
         print("="*60)
         print("  • ENTER: Voice input with VAD")
         print("  • Type: Text input")
@@ -484,7 +511,7 @@ class UltraVoiceAssistant:
                 else:
                     # Voice with VAD
                     audio = self.record_audio_vad()
-                    user_input = self.transcribe_audio_fast(audio)
+                    user_input = self.transcribe_audio_faster(audio)  # Using faster-whisper
                     
                 if user_input:
                     # Generate and speak
@@ -501,8 +528,10 @@ class UltraVoiceAssistant:
                                 print(f"{name}: {duration:.1f}s | ", end="")
                         print(f"Total: {total_time:.1f}s")
                         
-                        # Check if we hit target
-                        if total_time < 5.0:
+                        # Check if we hit new target
+                        if total_time < 3.0:
+                            print("  🏆 ULTRA-FAST! (<3s)")
+                        elif total_time < 5.0:
                             print("  ✅ Target achieved! (<5s)")
                         
                         self.perf.add_to_history()
@@ -520,7 +549,7 @@ class UltraVoiceAssistant:
         """Display performance summary"""
         if self.perf.history:
             avg = self.perf.get_average_metrics()
-            print("\n📊 Performance Summary:")
+            print("\n📊 Performance Summary (Faster-Whisper):")
             print("  " + "-"*40)
             total = 0
             for name, duration in avg.items():
@@ -530,13 +559,18 @@ class UltraVoiceAssistant:
             print("  " + "-"*40)
             print(f"  {'TOTAL':15s}: {total:.2f}s avg")
             
-            if total < 5.0:
-                print("\n  🏆 ACHIEVING TARGET! <5s average!")
+            if total < 3.0:
+                print("\n  🏆 ACHIEVING ULTRA-FAST TARGET! <3s average!")
+            elif total < 5.0:
+                print("\n  ✅ ACHIEVING TARGET! <5s average!")
 
 def main():
     """Main entry point"""
     try:
-        assistant = UltraVoiceAssistant()
+        print("\n🚀 Initializing Faster-Whisper Voice Assistant...")
+        print("   Expected: 4-5x faster transcription than OpenAI Whisper")
+        
+        assistant = FasterWhisperVoiceAssistant()
         assistant.conversation_loop()
     except Exception as e:
         print(f"\n💥 Fatal Error: {e}")
