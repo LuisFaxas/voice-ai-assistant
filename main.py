@@ -33,8 +33,8 @@ import sounddevice as sd
 from faster_whisper import WhisperModel  # NEW: Faster-whisper instead of OpenAI
 from llama_cpp import Llama
 
-# Initialize pygame with minimal latency settings
-pygame.mixer.pre_init(frequency=22050, size=-16, channels=1, buffer=128)
+# Initialize pygame with balanced quality/latency settings
+pygame.mixer.pre_init(frequency=22050, size=-16, channels=1, buffer=512)
 pygame.mixer.init()
 
 class PerformanceMonitor:
@@ -275,19 +275,20 @@ class FasterWhisperVoiceAssistant:
         
     def _init_tts_optimized(self):
         """Initialize TTS with caching and optimizations"""
-        print("\n[*] Setting up Ultra-Fast TTS...")
+        print("\n[*] Setting up Natural TTS...")
         
         voices_dir = Path("models/piper_voices")
         
-        # Use fastest voice (amy-medium is faster than ryan-high)
+        # Voice options with quality profiles
         voice_options = [
-            ("en_US-amy-medium", "Amy (Fast)"),
-            ("en_US-ryan-high", "Ryan (Quality)"),
+            ("en_US-ryan-high", "Ryan (Natural Quality)"),  # Better for natural speech
+            ("en_US-amy-medium", "Amy (Faster Response)"),  # Fallback
         ]
         
         self.voice_model = None
         self.voice_config = None
         
+        # Try Ryan first for better quality
         for voice_name, desc in voice_options:
             model_path = voices_dir / f"{voice_name}.onnx"
             config_path = voices_dir / f"{voice_name}.onnx.json"
@@ -297,6 +298,14 @@ class FasterWhisperVoiceAssistant:
                 self.voice_config = str(config_path.absolute())
                 self.selected_voice = voice_name
                 print(f"  [OK] Voice: {desc}")
+                
+                # Set voice-specific parameters
+                if "ryan" in voice_name:
+                    self.tts_speed = "0.98"  # Natural speed for Ryan
+                    self.tts_silence = "0.2"  # More natural pauses
+                else:
+                    self.tts_speed = "0.95"  # Slightly faster for Amy
+                    self.tts_silence = "0.15"  # Shorter pauses
                 break
         
         if not self.voice_model:
@@ -476,7 +485,7 @@ class FasterWhisperVoiceAssistant:
             return None
             
     def speak_text_fast(self, text: str):
-        """Ultra-fast TTS with streaming"""
+        """Natural TTS with improved quality"""
         if not text:
             return
             
@@ -484,6 +493,10 @@ class FasterWhisperVoiceAssistant:
         
         self.perf.start_timer("TTS")
         self.is_speaking = True
+        
+        # Clean text for TTS (remove special chars that cause issues)
+        text = text.strip()
+        text = re.sub(r'\s+', ' ', text)  # Normalize whitespace
         
         # Check cache first
         if text in self.tts_cache:
@@ -496,32 +509,58 @@ class FasterWhisperVoiceAssistant:
             
             tts_time = self.perf.end_timer("TTS")
             print(f" OK (cached: {tts_time:.2f}s)")
+            self.is_speaking = False
             return
         
         temp_wav = None
         
         try:
-            # Use pipe for faster generation
+            # Create temp file
             with tempfile.NamedTemporaryFile(suffix='.wav', delete=False) as f:
                 temp_wav = f.name
             
-            # Ultra-fast Piper settings
-            cmd = f'echo "{text}" | piper --model "{self.voice_model}" --config "{self.voice_config}" --output_file "{temp_wav}" --length-scale 0.9 --sentence-silence 0'
+            # Build Piper command with natural settings
+            cmd = [
+                'piper',
+                '--model', self.voice_model,
+                '--config', self.voice_config,
+                '--output_file', temp_wav,
+                '--length-scale', getattr(self, 'tts_speed', '0.98'),  # Voice-specific speed
+                '--sentence-silence', getattr(self, 'tts_silence', '0.15'),  # Voice-specific pauses
+                '--noise-scale', '0.667',  # Reduce artifacts (2/3 default)
+                '--noise-w', '0.8'  # Smoother voice
+            ]
             
             if self.piper_gpu_flag:
-                cmd += f" {self.piper_gpu_flag}"
+                cmd.append(self.piper_gpu_flag)
             
-            # Run in shell for speed
-            result = subprocess.run(cmd, shell=True, capture_output=True, timeout=3)
+            # Use Popen for better control
+            process = subprocess.Popen(
+                cmd,
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True
+            )
             
-            if result.returncode == 0 and os.path.exists(temp_wav):
-                # Play immediately
+            # Send text properly
+            stdout, stderr = process.communicate(input=text, timeout=5)
+            
+            if process.returncode == 0 and os.path.exists(temp_wav):
+                # Add small delay to ensure file is fully written
+                time.sleep(0.05)
+                
+                # Load and play with fade-in
                 pygame.mixer.music.load(temp_wav)
+                pygame.mixer.music.set_volume(0.95)  # Slightly reduce volume to avoid clipping
                 pygame.mixer.music.play()
                 
                 while pygame.mixer.music.get_busy():
                     time.sleep(0.02)
                 
+                # Proper cleanup
+                pygame.mixer.music.stop()
+                time.sleep(0.05)  # Small delay before unload
                 pygame.mixer.music.unload()
                 
                 tts_time = self.perf.end_timer("TTS")
@@ -531,7 +570,15 @@ class FasterWhisperVoiceAssistant:
                 if len(text) < 50:
                     self.tts_cache[text] = temp_wav
                     temp_wav = None  # Don't delete cached file
+            else:
+                print(f" ERROR: TTS failed")
+                if stderr:
+                    print(f"  Details: {stderr[:100]}")
                     
+        except subprocess.TimeoutExpired:
+            print(f" ERROR: TTS timeout")
+            if process:
+                process.kill()
         except Exception as e:
             print(f" ERROR: {e}")
             
@@ -541,11 +588,11 @@ class FasterWhisperVoiceAssistant:
             # Cleanup
             if temp_wav and os.path.exists(temp_wav):
                 try:
+                    # Add delay to avoid file lock issues
+                    time.sleep(0.1)
                     os.unlink(temp_wav)
                 except:
                     pass
-                    
-            time.sleep(0.1)
             
     def conversation_loop(self):
         """Main loop with ultra-low latency"""
