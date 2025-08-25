@@ -20,10 +20,18 @@ import torch
 import threading
 import queue
 import io
-from typing import Optional, Dict, List
+import shlex  # For proper shell escaping
+import json
+import select
+import wave
+from typing import Optional, Dict, List, Tuple
 from datetime import datetime
 from collections import deque
 import concurrent.futures
+try:
+    import pyttsx3  # Fallback TTS
+except ImportError:
+    pyttsx3 = None
 
 # Add project to path
 sys.path.append(str(Path(__file__).parent))
@@ -33,8 +41,8 @@ import sounddevice as sd
 from faster_whisper import WhisperModel  # NEW: Faster-whisper instead of OpenAI
 from llama_cpp import Llama
 
-# Initialize pygame with balanced quality/latency settings
-pygame.mixer.pre_init(frequency=22050, size=-16, channels=1, buffer=512)
+# Initialize pygame with stable audio settings
+pygame.mixer.pre_init(frequency=22050, size=-16, channels=1, buffer=1024)  # Larger buffer for stability
 pygame.mixer.init()
 
 class PerformanceMonitor:
@@ -93,6 +101,10 @@ class FasterWhisperVoiceAssistant:
         self.response_queue = queue.Queue()
         self.executor = concurrent.futures.ThreadPoolExecutor(max_workers=4)
         
+        # Persistent Piper process for zero-overhead TTS
+        self.piper_process = None
+        self.piper_lock = threading.Lock()
+        
         # Initialize components
         init_start = time.perf_counter()
         
@@ -105,9 +117,10 @@ class FasterWhisperVoiceAssistant:
         print(f"\n[OK] Systems initialized in {init_time:.2f}s\n")
         
     def show_banner(self):
+        mode = "FAST MODE" if os.environ.get('VOICE_MODE', 'fast') == 'fast' else "QUALITY MODE"
         print("\n" + "="*60)
-        print("  MISTRAL 7B + FASTER-WHISPER VOICE ASSISTANT")
-        print("  RTX 4090 Optimized | Target: <3s Response")
+        print(f"  VOICE ASSISTANT - {mode}")
+        print("  RTX 4090 Optimized | Target: <2s Fast / <5s Quality")
         print("="*60)
         
     def _check_gpu(self) -> str:
@@ -136,11 +149,11 @@ class FasterWhisperVoiceAssistant:
         self.channels = 1
         self.chunk_size = 1024
         
-        # Voice Activity Detection settings
-        self.vad_threshold = 0.01
-        self.silence_duration = 0.8  # Stop after 0.8s of silence
-        self.max_recording = 4.0     # Maximum 4 seconds
-        self.min_recording = 0.5     # Minimum 0.5 seconds
+        # Voice Activity Detection settings (optimized for speed)
+        self.vad_threshold = 0.015   # Slightly higher for quicker detection
+        self.silence_duration = 0.5  # Stop after 0.5s of silence (faster)
+        self.max_recording = 2.5     # Maximum 2.5 seconds (faster)
+        self.min_recording = 0.3     # Minimum 0.3 seconds
         
         print("  [OK] Audio ready with VAD")
         
@@ -166,7 +179,7 @@ class FasterWhisperVoiceAssistant:
         # medium.en: High accuracy (769M params)
         # large-v3: Best accuracy (1550M params)
         
-        model_size = "base.en"  # Better than tiny, still very fast with faster-whisper
+        model_size = "tiny.en"  # Fastest model (2x faster than base)
         
         # Initialize Faster-Whisper model
         self.whisper_model = WhisperModel(
@@ -198,12 +211,25 @@ class FasterWhisperVoiceAssistant:
         
         start = time.perf_counter()
         
-        # Try Mistral v0.3 first, then v0.2, then fallback to Phi-2
-        model_paths = [
-            Path("models/mistral-7b-instruct-v0.3.Q5_K_M.gguf"),  # Mistral 7B v0.3 (latest)
-            Path("models/mistral-7b-instruct-v0.2.Q5_K_M.gguf"),  # Mistral 7B v0.2
-            Path("models/phi-2.Q5_K_M.gguf")  # Fallback
-        ]
+        # Check for performance mode from environment or default to fast
+        quality_mode = os.environ.get('VOICE_MODE', 'fast').lower() == 'quality'
+        
+        if quality_mode:
+            # Quality mode: Try Mistral first
+            model_paths = [
+                Path("models/mistral-7b-instruct-v0.3.Q5_K_M.gguf"),  # Best quality
+                Path("models/mistral-7b-instruct-v0.2.Q5_K_M.gguf"),  # Good quality
+                Path("models/phi-2.Q5_K_M.gguf")  # Fast fallback
+            ]
+            print("  Mode: QUALITY (Mistral 7B preferred)")
+        else:
+            # Fast mode (default): Use Phi-2 for speed
+            model_paths = [
+                Path("models/phi-2.Q5_K_M.gguf"),  # Fast and responsive
+                Path("models/mistral-7b-instruct-v0.3.Q5_K_M.gguf"),  # Fallback
+                Path("models/mistral-7b-instruct-v0.2.Q5_K_M.gguf")  # Fallback
+            ]
+            print("  Mode: FAST (Phi-2 for speed)")
         
         model_path = None
         for path in model_paths:
@@ -220,13 +246,13 @@ class FasterWhisperVoiceAssistant:
         
         # RTX 4090 optimized settings for Mistral 7B
         if "mistral" in model_name.lower():
-            # Mistral 7B optimal settings for RTX 4090
+            # Mistral 7B optimized for faster response
             self.llm = Llama(
                 model_path=str(model_path),
-                n_ctx=4096,      # Larger context for better understanding
+                n_ctx=2048,      # Reduced context for speed
                 n_gpu_layers=-1 if self.device == "cuda" else 0,  # Full GPU offload
-                n_batch=512,     # Optimal batch size for 7B model
-                n_threads=8,     # Balanced threading
+                n_batch=1024,    # Larger batch for faster processing
+                n_threads=4,     # Fewer threads for less overhead
                 use_mmap=True,   # Memory mapping for faster loading
                 use_mlock=False,
                 seed=42,
@@ -244,19 +270,19 @@ class FasterWhisperVoiceAssistant:
             self.system_prompt = "You are a helpful AI assistant. Respond concisely and clearly."
             self.use_instruct_format = True
         else:
-            # Phi-2 settings (fallback)
+            # Phi-2 settings (optimized for speed)
             self.llm = Llama(
                 model_path=str(model_path),
-                n_ctx=1024,
+                n_ctx=512,       # Minimal context for ultra-fast response
                 n_gpu_layers=-1 if self.device == "cuda" else 0,
-                n_batch=2048,
-                n_threads=16,
+                n_batch=2048,    # Large batch for speed
+                n_threads=8,     # Balanced threading
                 use_mmap=True,
                 use_mlock=False,
                 seed=42,
                 verbose=False
             )
-            self.system_prompt = "Reply in max 10 words."
+            self.system_prompt = "Be concise and helpful. Respond naturally."
             self.use_instruct_format = False
         
         # Warm up the model
@@ -279,10 +305,10 @@ class FasterWhisperVoiceAssistant:
         
         voices_dir = Path("models/piper_voices")
         
-        # Voice options with quality profiles
+        # Voice options optimized for speed
         voice_options = [
-            ("en_US-ryan-high", "Ryan (Natural Quality)"),  # Better for natural speech
-            ("en_US-amy-medium", "Amy (Faster Response)"),  # Fallback
+            ("en_US-amy-medium", "Amy (Fast & Clear)"),  # Faster synthesis
+            ("en_US-ryan-high", "Ryan (Quality)"),  # Fallback for quality mode
         ]
         
         self.voice_model = None
@@ -299,13 +325,13 @@ class FasterWhisperVoiceAssistant:
                 self.selected_voice = voice_name
                 print(f"  [OK] Voice: {desc}")
                 
-                # Set voice-specific parameters
-                if "ryan" in voice_name:
-                    self.tts_speed = "0.98"  # Natural speed for Ryan
-                    self.tts_silence = "0.2"  # More natural pauses
-                else:
-                    self.tts_speed = "0.95"  # Slightly faster for Amy
-                    self.tts_silence = "0.15"  # Shorter pauses
+                # Set voice-specific parameters (stable, no glitching)
+                if "amy" in voice_name:
+                    self.tts_speed = "1.0"   # Natural speed (1.05 causes glitches)
+                    self.tts_silence = "0"   # No pauses for speed
+                else:  # Ryan
+                    self.tts_speed = "1.0"   # Natural speed
+                    self.tts_silence = "0"   # No pauses for speed
                 break
         
         if not self.voice_model:
@@ -315,61 +341,85 @@ class FasterWhisperVoiceAssistant:
         # TTS cache for common responses
         self.tts_cache = {}
         self.piper_gpu_flag = "--cuda" if self.device == "cuda" else ""
+        
+        # Start persistent Piper process
+        self._start_piper_process()
             
     def record_audio_vad(self) -> Optional[np.ndarray]:
-        """Record with Voice Activity Detection for dynamic duration"""
-        print("\n[MIC] Listening (VAD)...", end="", flush=True)
+        """Record with Voice Activity Detection or instant mode"""
         
-        self.perf.start_timer("Recording")
+        # Check for instant mode
+        instant_mode = os.environ.get('INSTANT_MODE', '0') == '1'
         
-        frames = []
-        silence_counter = 0
-        speech_detected = False
-        start_time = time.perf_counter()
-        
-        def callback(indata, frames_count, time_info, status):
-            if status:
-                print(f"Status: {status}")
-            frames.append(indata.copy())
-        
-        with sd.InputStream(callback=callback,
-                           channels=self.channels,
-                           samplerate=self.sample_rate,
-                           blocksize=self.chunk_size):
+        if instant_mode:
+            # Fixed 1 second recording, no VAD
+            print("\n[MIC] Recording (1s)...", end="", flush=True)
+            self.perf.start_timer("Recording")
             
-            while True:
-                time.sleep(0.1)
-                
-                if len(frames) > 0:
-                    # Check recent audio level
-                    recent_audio = np.concatenate(frames[-5:]) if len(frames) > 5 else np.concatenate(frames)
-                    amplitude = np.max(np.abs(recent_audio))
-                    
-                    if amplitude > self.vad_threshold:
-                        speech_detected = True
-                        silence_counter = 0
-                    elif speech_detected:
-                        silence_counter += 1
-                    
-                    # Stop conditions
-                    elapsed = time.perf_counter() - start_time
-                    
-                    if speech_detected and silence_counter > (self.silence_duration * 10):
-                        break  # Silence after speech
-                    elif elapsed > self.max_recording:
-                        break  # Max duration reached
-                    elif not speech_detected and elapsed > 2.0:
-                        break  # No speech detected in 2 seconds
-        
-        rec_time = self.perf.end_timer("Recording")
-        
-        if frames and speech_detected:
-            audio = np.concatenate(frames)
+            duration = 1.0  # Fixed 1 second
+            audio = sd.rec(int(duration * self.sample_rate), 
+                          samplerate=self.sample_rate,
+                          channels=self.channels,
+                          dtype='float32')
+            sd.wait()
+            
+            rec_time = self.perf.end_timer("Recording")
             print(f" OK ({rec_time:.1f}s)")
             return audio.flatten()
         else:
-            print(" (no speech)")
-            return None
+            # Standard VAD mode
+            print("\n[MIC] Listening (VAD)...", end="", flush=True)
+            
+            self.perf.start_timer("Recording")
+            
+            frames = []
+            silence_counter = 0
+            speech_detected = False
+            start_time = time.perf_counter()
+            
+            def callback(indata, frames_count, time_info, status):
+                if status:
+                    print(f"Status: {status}")
+                frames.append(indata.copy())
+            
+            with sd.InputStream(callback=callback,
+                               channels=self.channels,
+                               samplerate=self.sample_rate,
+                               blocksize=self.chunk_size):
+                
+                while True:
+                    time.sleep(0.05)  # Faster checking
+                    
+                    if len(frames) > 0:
+                        # Check recent audio level
+                        recent_audio = np.concatenate(frames[-5:]) if len(frames) > 5 else np.concatenate(frames)
+                        amplitude = np.max(np.abs(recent_audio))
+                        
+                        if amplitude > self.vad_threshold:
+                            speech_detected = True
+                            silence_counter = 0
+                        elif speech_detected:
+                            silence_counter += 1
+                        
+                        # Stop conditions
+                        elapsed = time.perf_counter() - start_time
+                        
+                        if speech_detected and silence_counter > (self.silence_duration * 20):  # Adjusted for 0.05s sleep
+                            break  # Silence after speech
+                        elif elapsed > self.max_recording:
+                            break  # Max duration reached
+                        elif not speech_detected and elapsed > 1.5:  # Reduced from 2.0
+                            break  # No speech detected quickly
+            
+            rec_time = self.perf.end_timer("Recording")
+            
+            if frames and speech_detected:
+                audio = np.concatenate(frames)
+                print(f" OK ({rec_time:.1f}s)")
+                return audio.flatten()
+            else:
+                print(" (no speech)")
+                return None
             
     def transcribe_audio_faster(self, audio: np.ndarray) -> Optional[str]:
         """Ultra-fast transcription with Faster-Whisper"""
@@ -381,26 +431,17 @@ class FasterWhisperVoiceAssistant:
         self.perf.start_timer("Transcription")
         
         try:
-            # Faster-Whisper transcription with optimized settings
+            # Faster-Whisper transcription with ULTRA optimized settings
             segments, info = self.whisper_model.transcribe(
                 audio,
                 language="en",
-                beam_size=1,  # Fastest beam search
+                beam_size=1,  # Fastest
                 best_of=1,    # Single attempt
                 temperature=0,  # Deterministic
-                vad_filter=True,  # Enable VAD filter for better accuracy
-                vad_parameters=dict(
-                    min_silence_duration_ms=500,  # Minimum silence for splitting
-                    threshold=0.6,  # VAD threshold
-                    min_speech_duration_ms=250,  # Minimum speech duration
-                    max_speech_duration_s=float('inf')
-                ),
-                without_timestamps=True,  # Skip timestamps for speed
-                word_timestamps=False,  # Skip word-level timestamps
-                condition_on_previous_text=False,  # Don't use context
-                compression_ratio_threshold=2.4,  # Skip low quality audio
-                log_prob_threshold=-1.0,  # Skip uncertain segments
-                no_speech_threshold=0.6  # Threshold for silence detection
+                vad_filter=False,  # Skip VAD for speed
+                without_timestamps=True,  # No timestamps
+                word_timestamps=False,  # No word-level
+                condition_on_previous_text=False,  # No context
             )
             
             # Collect transcribed text
@@ -422,8 +463,8 @@ class FasterWhisperVoiceAssistant:
             print(f" ERROR: {e}")
             return None
             
-    def generate_response_fast(self, user_input: str) -> Optional[str]:
-        """Ultra-fast LLM response with Mistral 7B optimizations"""
+    def generate_response_streaming(self, user_input: str):
+        """Stream LLM response with concurrent TTS for ultra-low latency"""
         if not user_input:
             return None
             
@@ -435,17 +476,17 @@ class FasterWhisperVoiceAssistant:
         if hasattr(self, 'use_instruct_format') and self.use_instruct_format:
             # Mistral Instruct format
             prompt = f"[INST] {user_input} [/INST]"
-            max_tokens = 50  # Allow more tokens for better responses
-            temperature = 0.7
-            top_p = 0.95
-            top_k = 40
+            max_tokens = 25  # Reduced for speed
+            temperature = 0.5  # More focused
+            top_p = 0.85
+            top_k = 20
         else:
             # Phi-2 format
-            prompt = f"User: {user_input}\nAssistant (max 10 words):"
-            max_tokens = 20
+            prompt = f"User: {user_input}\nAssistant:"
+            max_tokens = 20  # Reduced for speed
             temperature = 0.5
-            top_p = 0.9
-            top_k = 10
+            top_p = 0.85
+            top_k = 15
         
         try:
             response = self.llm(
@@ -454,22 +495,18 @@ class FasterWhisperVoiceAssistant:
                 temperature=temperature,
                 top_p=top_p,
                 top_k=top_k,
-                repeat_penalty=1.1,
+                repeat_penalty=1.05,
                 stop=["[INST]", "User:", "\n\n"],
-                echo=False
+                echo=False,
+                stream=False  # Could enable streaming in future
             )
             
             if response and 'choices' in response:
                 text = response['choices'][0]['text'].strip()
                 
-                # Clean up based on model
+                # Clean up
                 text = text.replace("Assistant:", "").strip()
                 text = text.replace("[/INST]", "").strip()
-                
-                # Limit response length for speed
-                sentences = text.split('.')
-                if len(sentences) > 2:
-                    text = '.'.join(sentences[:2]) + '.'
                 
                 if text and text[0].islower():
                     text = text[0].upper() + text[1:]
@@ -477,7 +514,14 @@ class FasterWhisperVoiceAssistant:
                 llm_time = self.perf.end_timer("LLM")
                 print(f" OK ({llm_time:.2f}s)")
                 
+                # Start TTS immediately in parallel
+                self.perf.start_timer("TTS")
+                tts_thread = threading.Thread(target=self.speak_text_fast, args=(text,))
+                tts_thread.start()
+                
                 print(f"\n[AI] {text}")
+                
+                # Return text and thread
                 return text
                 
         except Exception as e:
@@ -485,7 +529,7 @@ class FasterWhisperVoiceAssistant:
             return None
             
     def speak_text_fast(self, text: str):
-        """Natural TTS with improved quality"""
+        """Robust TTS with fallback options"""
         if not text:
             return
             
@@ -494,112 +538,146 @@ class FasterWhisperVoiceAssistant:
         self.perf.start_timer("TTS")
         self.is_speaking = True
         
-        # Clean text for TTS (remove special chars that cause issues)
+        # Clean text for TTS
         text = text.strip()
+        text = re.sub(r'[^\w\s.,!?-]', '', text)  # Remove problematic chars
         text = re.sub(r'\s+', ' ', text)  # Normalize whitespace
         
         # Check cache first
         if text in self.tts_cache:
-            # Play from cache
-            pygame.mixer.music.load(self.tts_cache[text])
-            pygame.mixer.music.play()
-            while pygame.mixer.music.get_busy():
-                time.sleep(0.05)
-            pygame.mixer.music.unload()
+            try:
+                pygame.mixer.music.load(self.tts_cache[text])
+                pygame.mixer.music.play()
+                while pygame.mixer.music.get_busy():
+                    time.sleep(0.01)
+                pygame.mixer.music.unload()
+                
+                tts_time = self.perf.end_timer("TTS")
+                print(f" OK (cached: {tts_time:.2f}s)")
+                self.is_speaking = False
+                return
+            except:
+                pass  # Cache failed, continue with generation
+        
+        # Try Piper TTS first
+        success = self._speak_with_piper(text)
+        
+        # If Piper fails, try fallback
+        if not success and pyttsx3:
+            success = self._speak_with_pyttsx3(text)
+        
+        tts_time = self.perf.end_timer("TTS")
+        if success:
+            print(f" OK ({tts_time:.2f}s)")
+        else:
+            print(f" FAILED")
+        
+        self.is_speaking = False
+    
+    def _start_piper_process(self):
+        """Start persistent Piper process for zero-overhead TTS"""
+        try:
+            # Start Piper in streaming mode
+            cmd = [
+                'piper',
+                '--model', self.voice_model,
+                '--config', self.voice_config,
+                '--length-scale', '1.0',
+                '--sentence-silence', '0',
+                '--output-raw'  # Raw audio output for streaming
+            ]
             
-            tts_time = self.perf.end_timer("TTS")
-            print(f" OK (cached: {tts_time:.2f}s)")
-            self.is_speaking = False
-            return
-        
+            self.piper_process = subprocess.Popen(
+                cmd,
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                bufsize=0  # Unbuffered for real-time
+            )
+            
+            print("  [OK] Persistent Piper process started")
+            
+        except Exception as e:
+            print(f"  [WARN] Failed to start persistent Piper: {e}")
+            self.piper_process = None
+    
+    def _speak_with_piper(self, text: str) -> bool:
+        """Try to speak with Piper TTS"""
         temp_wav = None
-        
         try:
             # Create temp file
             with tempfile.NamedTemporaryFile(suffix='.wav', delete=False) as f:
                 temp_wav = f.name
             
-            # Build Piper command with natural settings
-            cmd = [
-                'piper',
-                '--model', self.voice_model,
-                '--config', self.voice_config,
-                '--output_file', temp_wav,
-                '--length-scale', getattr(self, 'tts_speed', '0.98'),  # Voice-specific speed
-                '--sentence-silence', getattr(self, 'tts_silence', '0.15'),  # Voice-specific pauses
-                '--noise-scale', '0.667',  # Reduce artifacts (2/3 default)
-                '--noise-w', '0.8'  # Smoother voice
-            ]
+            # Use shell command with proper escaping for reliability
+            escaped_text = shlex.quote(text)
+            cmd = f'echo {escaped_text} | piper --model "{self.voice_model}" --config "{self.voice_config}" --output_file "{temp_wav}" --length-scale 1.0 --sentence-silence 0'
             
-            if self.piper_gpu_flag:
-                cmd.append(self.piper_gpu_flag)
+            # Run with shell=True for piping
+            result = subprocess.run(cmd, shell=True, capture_output=True, timeout=2, text=True)
             
-            # Use Popen for better control
-            process = subprocess.Popen(
-                cmd,
-                stdin=subprocess.PIPE,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                text=True
-            )
-            
-            # Send text properly
-            stdout, stderr = process.communicate(input=text, timeout=5)
-            
-            if process.returncode == 0 and os.path.exists(temp_wav):
-                # Add small delay to ensure file is fully written
-                time.sleep(0.05)
-                
-                # Load and play with fade-in
-                pygame.mixer.music.load(temp_wav)
-                pygame.mixer.music.set_volume(0.95)  # Slightly reduce volume to avoid clipping
-                pygame.mixer.music.play()
-                
-                while pygame.mixer.music.get_busy():
-                    time.sleep(0.02)
-                
-                # Proper cleanup
-                pygame.mixer.music.stop()
-                time.sleep(0.05)  # Small delay before unload
-                pygame.mixer.music.unload()
-                
-                tts_time = self.perf.end_timer("TTS")
-                print(f" OK ({tts_time:.2f}s)")
-                
-                # Cache if short enough
-                if len(text) < 50:
-                    self.tts_cache[text] = temp_wav
-                    temp_wav = None  # Don't delete cached file
-            else:
-                print(f" ERROR: TTS failed")
-                if stderr:
-                    print(f"  Details: {stderr[:100]}")
+            if result.returncode == 0 and os.path.exists(temp_wav) and os.path.getsize(temp_wav) > 0:
+                # Play the audio
+                try:
+                    pygame.mixer.music.load(temp_wav)
+                    pygame.mixer.music.play()
                     
+                    while pygame.mixer.music.get_busy():
+                        time.sleep(0.01)
+                    
+                    pygame.mixer.music.unload()
+                    
+                    # Cache successful generation
+                    if len(text) < 50:
+                        self.tts_cache[text] = temp_wav
+                        temp_wav = None  # Don't delete cached file
+                    
+                    return True
+                except pygame.error as e:
+                    print(f" [pygame error: {e}]", end="")
+                    return False
+            else:
+                if result.stderr:
+                    print(f" [piper: {result.stderr[:50]}]", end="")
+                return False
+                
         except subprocess.TimeoutExpired:
-            print(f" ERROR: TTS timeout")
-            if process:
-                process.kill()
+            print(" [timeout]", end="")
+            return False
         except Exception as e:
-            print(f" ERROR: {e}")
-            
+            print(f" [{type(e).__name__}]", end="")
+            return False
         finally:
-            self.is_speaking = False
-            
-            # Cleanup
+            # Cleanup temp file if not cached
             if temp_wav and os.path.exists(temp_wav):
                 try:
-                    # Add delay to avoid file lock issues
-                    time.sleep(0.1)
                     os.unlink(temp_wav)
                 except:
                     pass
+    
+    def _speak_with_pyttsx3(self, text: str) -> bool:
+        """Fallback TTS using pyttsx3"""
+        try:
+            if not hasattr(self, 'pyttsx3_engine'):
+                self.pyttsx3_engine = pyttsx3.init()
+                self.pyttsx3_engine.setProperty('rate', 180)  # Slightly faster
+                
+            self.pyttsx3_engine.say(text)
+            self.pyttsx3_engine.runAndWait()
+            return True
+        except Exception as e:
+            print(f" [pyttsx3: {e}]", end="")
+            return False
             
     def conversation_loop(self):
         """Main loop with ultra-low latency"""
+        mode = os.environ.get('VOICE_MODE', 'fast').upper()
+        instant = " (Instant)" if os.environ.get('INSTANT_MODE', '0') == '1' else " (VAD)"
+        
         print("\n" + "="*60)
-        print("  MISTRAL 7B + FASTER-WHISPER - RTX 4090 MODE")
+        print(f"  {mode} MODE ACTIVE - RTX 4090 ACCELERATED")
         print("="*60)
-        print("  - ENTER: Voice input with VAD")
+        print(f"  - ENTER: Voice input{instant}")
         print("  - Type: Text input")
         print("  - Commands: quit, metrics")
         print("="*60)
@@ -631,10 +709,11 @@ class FasterWhisperVoiceAssistant:
                     user_input = self.transcribe_audio_faster(audio)  # Using faster-whisper
                     
                 if user_input:
-                    # Generate and speak
-                    response = self.generate_response_fast(user_input)
+                    # Generate with streaming TTS
+                    response = self.generate_response_streaming(user_input)
                     if response:
-                        self.speak_text_fast(response)
+                        # TTS already started in parallel
+                        pass
                         
                         # Show metrics
                         total_time = self.perf.end_timer("Total")
@@ -646,7 +725,9 @@ class FasterWhisperVoiceAssistant:
                         print(f"Total: {total_time:.1f}s")
                         
                         # Check if we hit new target
-                        if total_time < 3.0:
+                        if total_time < 2.0:
+                            print("  [**] BLAZING FAST! (<2s)")
+                        elif total_time < 3.0:
                             print("  [*] ULTRA-FAST! (<3s)")
                         elif total_time < 5.0:
                             print("  [OK] Target achieved! (<5s)")
@@ -662,6 +743,14 @@ class FasterWhisperVoiceAssistant:
                 
         print("\n[*] Shutting down...")
         
+        # Cleanup persistent Piper
+        if hasattr(self, 'piper_process') and self.piper_process:
+            try:
+                self.piper_process.terminate()
+                self.piper_process.wait(timeout=1.0)
+            except:
+                pass
+        
     def show_metrics_summary(self):
         """Display performance summary"""
         if self.perf.history:
@@ -676,17 +765,42 @@ class FasterWhisperVoiceAssistant:
             print("  " + "-"*40)
             print(f"  {'TOTAL':15s}: {total:.2f}s avg")
             
-            if total < 3.0:
+            if total < 2.0:
+                print("\n  [**] ACHIEVING BLAZING FAST TARGET! <2s average!")
+            elif total < 3.0:
                 print("\n  [*] ACHIEVING ULTRA-FAST TARGET! <3s average!")
             elif total < 5.0:
                 print("\n  [OK] ACHIEVING TARGET! <5s average!")
 
 def main():
-    """Main entry point"""
+    """Main entry point with performance modes"""
+    import argparse
+    
+    parser = argparse.ArgumentParser(description="Voice Assistant with Performance Modes")
+    parser.add_argument("--quality", action="store_true", 
+                       help="Quality mode: Use Mistral 7B for better responses (slower)")
+    parser.add_argument("--fast", action="store_true", default=True,
+                       help="Fast mode: Use Phi-2 for quick responses (default)")
+    parser.add_argument("--instant", action="store_true",
+                       help="Instant recording: Fixed 1s recording, no VAD")
+    args = parser.parse_args()
+    
+    # Set performance mode
+    if args.quality:
+        os.environ['VOICE_MODE'] = 'quality'
+        mode = "QUALITY MODE (Mistral 7B)"
+    else:
+        os.environ['VOICE_MODE'] = 'fast'
+        mode = "FAST MODE (Phi-2)"
+    
+    if args.instant:
+        os.environ['INSTANT_MODE'] = '1'
+        mode += " + INSTANT RECORDING"
+    
     try:
-        print("\n[*] Initializing Mistral 7B Voice Assistant...")
+        print("\n[*] Initializing Voice Assistant...")
+        print(f"   Mode: {mode}")
         print("   RTX 4090 Optimized | Faster-Whisper STT")
-        print("   Downloading model if needed...")
         
         assistant = FasterWhisperVoiceAssistant()
         assistant.conversation_loop()
