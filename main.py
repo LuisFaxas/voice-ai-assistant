@@ -348,6 +348,10 @@ class FasterWhisperVoiceAssistant:
     def record_audio_vad(self) -> Optional[np.ndarray]:
         """Record with Voice Activity Detection or instant mode"""
         
+        # Wait for TTS to finish speaking before recording
+        while self.is_speaking:
+            time.sleep(0.1)
+        
         # Check for instant mode
         instant_mode = os.environ.get('INSTANT_MODE', '0') == '1'
         
@@ -466,7 +470,7 @@ class FasterWhisperVoiceAssistant:
     def generate_response_streaming(self, user_input: str):
         """Stream LLM response with concurrent TTS for ultra-low latency"""
         if not user_input:
-            return None
+            return (None, None)
             
         print("[LLM] Thinking...", end="", flush=True)
         
@@ -515,18 +519,17 @@ class FasterWhisperVoiceAssistant:
                 print(f" OK ({llm_time:.2f}s)")
                 
                 # Start TTS immediately in parallel
-                self.perf.start_timer("TTS")
                 tts_thread = threading.Thread(target=self.speak_text_fast, args=(text,))
                 tts_thread.start()
                 
                 print(f"\n[AI] {text}")
                 
-                # Return text and thread
-                return text
+                # Return both text and thread for synchronization
+                return (text, tts_thread)
                 
         except Exception as e:
             print(f" ERROR: {e}")
-            return None
+            return (None, None)
             
     def speak_text_fast(self, text: str):
         """Robust TTS with fallback options"""
@@ -710,10 +713,15 @@ class FasterWhisperVoiceAssistant:
                     
                 if user_input:
                     # Generate with streaming TTS
-                    response = self.generate_response_streaming(user_input)
-                    if response:
-                        # TTS already started in parallel
-                        pass
+                    result = self.generate_response_streaming(user_input)
+                    if result:
+                        # Unpack response and thread
+                        if isinstance(result, tuple):
+                            response_text, tts_thread = result
+                            # Wait for TTS to complete
+                            tts_thread.join(timeout=10.0)
+                        else:
+                            response_text = result
                         
                         # Show metrics
                         total_time = self.perf.end_timer("Total")
