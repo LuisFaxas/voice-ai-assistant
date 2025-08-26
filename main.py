@@ -101,9 +101,8 @@ class FasterWhisperVoiceAssistant:
         self.response_queue = queue.Queue()
         self.executor = concurrent.futures.ThreadPoolExecutor(max_workers=4)
         
-        # Persistent Piper process for zero-overhead TTS
-        self.piper_process = None
-        self.piper_lock = threading.Lock()
+        # TTS configuration
+        self.tts_lock = threading.Lock()
         
         # Initialize components
         init_start = time.perf_counter()
@@ -117,10 +116,11 @@ class FasterWhisperVoiceAssistant:
         print(f"\n[OK] Systems initialized in {init_time:.2f}s\n")
         
     def show_banner(self):
-        mode = "FAST MODE" if os.environ.get('VOICE_MODE', 'fast') == 'fast' else "QUALITY MODE"
+        llm = os.environ.get('LLM_MODEL', 'mistral').upper()
+        voice = os.environ.get('VOICE_MODEL', 'ryan').capitalize()
         print("\n" + "="*60)
-        print(f"  VOICE ASSISTANT - {mode}")
-        print("  RTX 4090 Optimized | Target: <2s Fast / <5s Quality")
+        print(f"  ADVANCED VOICE ASSISTANT")
+        print(f"  LLM: {llm} | Voice: {voice} | RTX 4090 Optimized")
         print("="*60)
         
     def _check_gpu(self) -> str:
@@ -206,30 +206,44 @@ class FasterWhisperVoiceAssistant:
         print(f"     Expected: 4-5x faster than OpenAI Whisper")
         
     def _init_llm(self):
-        """Initialize Mistral 7B with RTX 4090 optimizations"""
-        print("\n[*] Loading Mistral 7B...")
+        """Initialize LLM with RTX 4090 optimizations"""
+        print("\n[*] Loading Language Model...")
         
         start = time.perf_counter()
         
-        # Check for performance mode from environment or default to fast
-        quality_mode = os.environ.get('VOICE_MODE', 'fast').lower() == 'quality'
+        # Get LLM selection from environment
+        llm_choice = os.environ.get('LLM_MODEL', 'mistral').lower()
         
-        if quality_mode:
-            # Quality mode: Try Mistral first
-            model_paths = [
-                Path("models/mistral-7b-instruct-v0.3.Q5_K_M.gguf"),  # Best quality
-                Path("models/mistral-7b-instruct-v0.2.Q5_K_M.gguf"),  # Good quality
-                Path("models/phi-2.Q5_K_M.gguf")  # Fast fallback
-            ]
-            print("  Mode: QUALITY (Mistral 7B preferred)")
-        else:
-            # Fast mode (default): Use Phi-2 for speed
-            model_paths = [
-                Path("models/phi-2.Q5_K_M.gguf"),  # Fast and responsive
-                Path("models/mistral-7b-instruct-v0.3.Q5_K_M.gguf"),  # Fallback
-                Path("models/mistral-7b-instruct-v0.2.Q5_K_M.gguf")  # Fallback
-            ]
-            print("  Mode: FAST (Phi-2 for speed)")
+        # Model selection based on user choice
+        model_configs = {
+            'mistral': {
+                'paths': [
+                    Path("models/mistral-7b-instruct-v0.3.Q5_K_M.gguf"),
+                    Path("models/mistral-7b-instruct-v0.2.Q5_K_M.gguf")
+                ],
+                'name': 'Mistral 7B',
+                'description': 'Best quality conversations'
+            },
+            'mistral-v2': {
+                'paths': [Path("models/mistral-7b-instruct-v0.2.Q5_K_M.gguf")],
+                'name': 'Mistral 7B v0.2',
+                'description': 'Stable version'
+            },
+            'phi2': {
+                'paths': [Path("models/phi-2.Q5_K_M.gguf")],
+                'name': 'Phi-2',
+                'description': 'Fast responses'
+            }
+        }
+        
+        # Get model configuration
+        if llm_choice not in model_configs:
+            print(f"  [WARN] Unknown model '{llm_choice}', defaulting to Mistral")
+            llm_choice = 'mistral'
+        
+        config = model_configs[llm_choice]
+        print(f"  Selected: {config['name']} - {config['description']}")
+        model_paths = config['paths']
         
         model_path = None
         for path in model_paths:
@@ -266,9 +280,10 @@ class FasterWhisperVoiceAssistant:
                 vocab_only=False,
                 embedding=False
             )
-            # Better prompt for Mistral
-            self.system_prompt = "You are a helpful AI assistant. Respond concisely and clearly."
+            # Mistral-specific system prompt
+            self.system_prompt = "You are a helpful AI assistant powered by Mistral. Provide concise, accurate, and helpful responses."
             self.use_instruct_format = True
+            self.model_type = 'mistral'
         else:
             # Phi-2 settings (optimized for speed)
             self.llm = Llama(
@@ -282,8 +297,9 @@ class FasterWhisperVoiceAssistant:
                 seed=42,
                 verbose=False
             )
-            self.system_prompt = "Be concise and helpful. Respond naturally."
+            self.system_prompt = "You are Phi, a helpful AI assistant. Provide brief, natural responses to the user's questions."
             self.use_instruct_format = False
+            self.model_type = 'phi2'
         
         # Warm up the model
         self.llm("Hello", max_tokens=1, echo=False)
@@ -305,16 +321,32 @@ class FasterWhisperVoiceAssistant:
         
         voices_dir = Path("models/piper_voices")
         
-        # Voice options optimized for speed
-        voice_options = [
-            ("en_US-amy-medium", "Amy (Fast & Clear)"),  # Faster synthesis
-            ("en_US-ryan-high", "Ryan (Quality)"),  # Fallback for quality mode
-        ]
+        # Get voice selection from environment
+        voice_choice = os.environ.get('VOICE_MODEL', 'ryan').lower()
+        
+        # Voice configurations
+        voice_configs = {
+            'ryan': ("en_US-ryan-high", "Ryan (Male, High Quality)"),
+            'amy': ("en_US-amy-medium", "Amy (Female, Clear)"),
+        }
+        
+        # Select voice based on user choice
+        if voice_choice in voice_configs:
+            voice_options = [voice_configs[voice_choice]]
+            # Add fallback option
+            fallback = 'amy' if voice_choice == 'ryan' else 'ryan'
+            voice_options.append(voice_configs[fallback])
+        else:
+            print(f"  [WARN] Unknown voice '{voice_choice}', using default")
+            voice_options = [
+                voice_configs['ryan'],
+                voice_configs['amy']
+            ]
         
         self.voice_model = None
         self.voice_config = None
         
-        # Try Ryan first for better quality
+        # Try selected voice first
         for voice_name, desc in voice_options:
             model_path = voices_dir / f"{voice_name}.onnx"
             config_path = voices_dir / f"{voice_name}.onnx.json"
@@ -325,13 +357,7 @@ class FasterWhisperVoiceAssistant:
                 self.selected_voice = voice_name
                 print(f"  [OK] Voice: {desc}")
                 
-                # Set voice-specific parameters (stable, no glitching)
-                if "amy" in voice_name:
-                    self.tts_speed = "1.0"   # Natural speed (1.05 causes glitches)
-                    self.tts_silence = "0"   # No pauses for speed
-                else:  # Ryan
-                    self.tts_speed = "1.0"   # Natural speed
-                    self.tts_silence = "0"   # No pauses for speed
+                # Voice will be configured in setup_tts_parameters()
                 break
         
         if not self.voice_model:
@@ -342,8 +368,8 @@ class FasterWhisperVoiceAssistant:
         self.tts_cache = {}
         self.piper_gpu_flag = "--cuda" if self.device == "cuda" else ""
         
-        # Start persistent Piper process
-        self._start_piper_process()
+        # TTS parameters for natural voice
+        self.setup_tts_parameters()
             
     def record_audio_vad(self) -> Optional[np.ndarray]:
         """Record with Voice Activity Detection or instant mode"""
@@ -577,32 +603,24 @@ class FasterWhisperVoiceAssistant:
         
         self.is_speaking = False
     
-    def _start_piper_process(self):
-        """Start persistent Piper process for zero-overhead TTS"""
-        try:
-            # Start Piper in streaming mode
-            cmd = [
-                'piper',
-                '--model', self.voice_model,
-                '--config', self.voice_config,
-                '--length-scale', '1.0',
-                '--sentence-silence', '0',
-                '--output-raw'  # Raw audio output for streaming
-            ]
-            
-            self.piper_process = subprocess.Popen(
-                cmd,
-                stdin=subprocess.PIPE,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                bufsize=0  # Unbuffered for real-time
-            )
-            
-            print("  [OK] Persistent Piper process started")
-            
-        except Exception as e:
-            print(f"  [WARN] Failed to start persistent Piper: {e}")
-            self.piper_process = None
+    def setup_tts_parameters(self):
+        """Setup optimized TTS parameters for natural voice"""
+        # Voice-specific optimized parameters
+        if "ryan" in self.selected_voice.lower():
+            self.tts_speed = "0.95"     # Slightly faster for naturalness
+            self.tts_silence = "0.1"    # Small pause between sentences
+            self.tts_noise = "0.333"    # Reduce robotic sound
+            print("  [OK] Ryan voice optimized for quality")
+        elif "amy" in self.selected_voice.lower():
+            self.tts_speed = "0.98"     # Near natural speed
+            self.tts_silence = "0.05"   # Minimal pauses
+            self.tts_noise = "0.4"      # Slightly more noise for Amy
+            print("  [OK] Amy voice optimized for clarity")
+        else:
+            # Default parameters
+            self.tts_speed = "1.0"
+            self.tts_silence = "0.1"
+            self.tts_noise = "0.333"
     
     def _speak_with_piper(self, text: str) -> bool:
         """Try to speak with Piper TTS"""
@@ -612,9 +630,9 @@ class FasterWhisperVoiceAssistant:
             with tempfile.NamedTemporaryFile(suffix='.wav', delete=False) as f:
                 temp_wav = f.name
             
-            # Use shell command with proper escaping for reliability
+            # Use shell command with optimized parameters for natural voice
             escaped_text = shlex.quote(text)
-            cmd = f'echo {escaped_text} | piper --model "{self.voice_model}" --config "{self.voice_config}" --output_file "{temp_wav}" --length-scale 1.0 --sentence-silence 0'
+            cmd = f'echo {escaped_text} | piper --model "{self.voice_model}" --config "{self.voice_config}" --output_file "{temp_wav}" --length-scale {self.tts_speed} --sentence-silence {self.tts_silence} --noise-scale {self.tts_noise}'
             
             # Run with shell=True for piping
             result = subprocess.run(cmd, shell=True, capture_output=True, timeout=2, text=True)
@@ -674,13 +692,14 @@ class FasterWhisperVoiceAssistant:
             
     def conversation_loop(self):
         """Main loop with ultra-low latency"""
-        mode = os.environ.get('VOICE_MODE', 'fast').upper()
-        instant = " (Instant)" if os.environ.get('INSTANT_MODE', '0') == '1' else " (VAD)"
+        llm = os.environ.get('LLM_MODEL', 'mistral').upper()
+        voice = os.environ.get('VOICE_MODEL', 'ryan').capitalize()
+        instant = "Instant" if os.environ.get('INSTANT_MODE', '0') == '1' else "VAD"
         
         print("\n" + "="*60)
-        print(f"  {mode} MODE ACTIVE - RTX 4090 ACCELERATED")
+        print(f"  READY - {llm} | {voice} Voice | {instant} Mode")
         print("="*60)
-        print(f"  - ENTER: Voice input{instant}")
+        print(f"  - ENTER: Voice input ({instant})")
         print("  - Type: Text input")
         print("  - Commands: quit, metrics")
         print("="*60)
@@ -751,14 +770,6 @@ class FasterWhisperVoiceAssistant:
                 
         print("\n[*] Shutting down...")
         
-        # Cleanup persistent Piper
-        if hasattr(self, 'piper_process') and self.piper_process:
-            try:
-                self.piper_process.terminate()
-                self.piper_process.wait(timeout=1.0)
-            except:
-                pass
-        
     def show_metrics_summary(self):
         """Display performance summary"""
         if self.perf.history:
@@ -781,29 +792,53 @@ class FasterWhisperVoiceAssistant:
                 print("\n  [OK] ACHIEVING TARGET! <5s average!")
 
 def main():
-    """Main entry point with performance modes"""
+    """Main entry point with full customization"""
     import argparse
     
-    parser = argparse.ArgumentParser(description="Voice Assistant with Performance Modes")
-    parser.add_argument("--quality", action="store_true", 
-                       help="Quality mode: Use Mistral 7B for better responses (slower)")
-    parser.add_argument("--fast", action="store_true", default=True,
-                       help="Fast mode: Use Phi-2 for quick responses (default)")
+    parser = argparse.ArgumentParser(description="Advanced Voice Assistant with RTX 4090")
+    
+    # LLM selection
+    parser.add_argument("--llm", choices=['mistral', 'mistral-v2', 'phi2'],
+                       default='mistral',
+                       help="Choose language model (default: mistral)")
+    
+    # Voice selection
+    parser.add_argument("--voice", choices=['ryan', 'amy'],
+                       default='ryan',
+                       help="Choose voice (default: ryan)")
+    
+    # Recording mode
     parser.add_argument("--instant", action="store_true",
                        help="Instant recording: Fixed 1s recording, no VAD")
+    
+    # Legacy compatibility
+    parser.add_argument("--quality", action="store_true", 
+                       help="(Deprecated) Use --llm mistral instead")
+    parser.add_argument("--fast", action="store_true",
+                       help="(Deprecated) Use --llm phi2 instead")
+    
     args = parser.parse_args()
     
-    # Set performance mode
+    # Handle legacy flags
     if args.quality:
-        os.environ['VOICE_MODE'] = 'quality'
-        mode = "QUALITY MODE (Mistral 7B)"
-    else:
-        os.environ['VOICE_MODE'] = 'fast'
-        mode = "FAST MODE (Phi-2)"
+        args.llm = 'mistral'
+    elif args.fast:
+        args.llm = 'phi2'
+    
+    # Set environment variables
+    os.environ['LLM_MODEL'] = args.llm
+    os.environ['VOICE_MODEL'] = args.voice
     
     if args.instant:
         os.environ['INSTANT_MODE'] = '1'
-        mode += " + INSTANT RECORDING"
+    
+    # Build mode description
+    llm_names = {'mistral': 'Mistral 7B', 'mistral-v2': 'Mistral 7B v0.2', 'phi2': 'Phi-2'}
+    voice_names = {'ryan': 'Ryan (Male)', 'amy': 'Amy (Female)'}
+    
+    mode = f"LLM: {llm_names[args.llm]}, Voice: {voice_names[args.voice]}"
+    if args.instant:
+        mode += ", Instant Recording"
     
     try:
         print("\n[*] Initializing Voice Assistant...")
